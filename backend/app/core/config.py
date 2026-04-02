@@ -1,0 +1,84 @@
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    """
+    Central application settings.
+
+    Reads values from backend/.env and provides strongly typed access
+    across the application.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # App
+    app_name: str = Field(default="FitFuel AI API", alias="APP_NAME")
+    app_env: str = Field(default="development", alias="APP_ENV")
+    app_debug: bool = Field(default=True, alias="APP_DEBUG")
+    app_host: str = Field(default="0.0.0.0", alias="APP_HOST")
+    app_port: int = Field(default=8000, alias="APP_PORT")
+    api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
+
+    # Database
+    database_url: str = Field(
+        default="postgresql+psycopg://fitfuel:fitfuel_dev_password@localhost:5432/fitfuel",
+        alias="DATABASE_URL",
+    )
+
+    # JWT
+    jwt_secret_key: str = Field(default="change-this-secret-key", alias="JWT_SECRET_KEY")
+    jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
+    access_token_expire_minutes: int = Field(
+        default=60,
+        alias="ACCESS_TOKEN_EXPIRE_MINUTES",
+    )
+
+    # CORS
+    cors_origins: str = Field(
+        default="http://localhost:3000,http://127.0.0.1:3000",
+        alias="CORS_ORIGINS",
+    )
+
+    # Cloudinary
+    cloudinary_cloud_name: str = Field(default="", alias="CLOUDINARY_CLOUD_NAME")
+    cloudinary_api_key: str = Field(default="", alias="CLOUDINARY_API_KEY")
+    cloudinary_api_secret: str = Field(default="", alias="CLOUDINARY_API_SECRET")
+
+    # Uploads
+    local_upload_dir: str = Field(
+        default=str(BASE_DIR / "uploads"),
+        alias="LOCAL_UPLOAD_DIR",
+    )
+    max_photo_upload_mb: int = Field(default=10, alias="MAX_PHOTO_UPLOAD_MB")
+
+    # Vision
+    vision_device: str = Field(default="cpu", alias="VISION_DEVICE")
+    vision_model_path: str = Field(default="", alias="VISION_MODEL_PATH")
+    vision_class_names_path: str = Field(default="", alias="VISION_CLASS_NAMES_PATH")
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """
+        Convert comma-separated CORS origins into a clean list.
+        """
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
