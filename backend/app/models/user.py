@@ -10,8 +10,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.activity_log import ActivityLog
+    from app.models.activity_profile import ActivityProfile
+    from app.models.allergy import Allergy
     from app.models.audit_log import AuditLog
     from app.models.chat_session import ChatSession
+    from app.models.dietary_preference import DietaryPreference
     from app.models.food_log import FoodLog
     from app.models.grocery_list import GroceryList
     from app.models.meal_plan import MealPlan
@@ -78,6 +82,31 @@ class User(Base, TimestampMixin):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    activity_profile: Mapped[ActivityProfile | None] = relationship(
+        "ActivityProfile",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    allergies: Mapped[list[Allergy]] = relationship(
+        "Allergy",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        order_by="Allergy.created_at.desc()",
+    )
+    dietary_preferences: Mapped[list[DietaryPreference]] = relationship(
+        "DietaryPreference",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        order_by="DietaryPreference.created_at.desc()",
+    )
+    activity_logs: Mapped[list[ActivityLog]] = relationship(
+        "ActivityLog",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        order_by="ActivityLog.logged_for_date.desc()",
+    )
+
     goals: Mapped[list[UserGoal]] = relationship(
         "UserGoal",
         back_populates="user",

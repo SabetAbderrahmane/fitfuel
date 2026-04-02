@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -14,8 +14,12 @@ if TYPE_CHECKING:
 
 class UserProfile(Base, TimestampMixin):
     """
-    Stores onboarding and profile information used for personalized nutrition
-    and fitness recommendations.
+    Stores core onboarding and body/profile information.
+
+    Dynamic lifestyle preferences are normalized into separate tables:
+    - activity_profiles
+    - allergies
+    - dietary_preferences
     """
 
     __tablename__ = "user_profiles"
@@ -42,12 +46,6 @@ class UserProfile(Base, TimestampMixin):
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
     start_weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     current_weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-    activity_level: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    diet_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
-
-    allergies_csv: Mapped[str | None] = mapped_column(Text, nullable=True)
-    disliked_foods_csv: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped[User] = relationship(
         "User",

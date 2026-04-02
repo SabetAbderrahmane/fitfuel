@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.ai.nutrition.bmr import BMRInput, calculate_bmr
 from app.ai.nutrition.macro_calculator import calculate_macros
 from app.ai.nutrition.tdee import calculate_goal_calories, calculate_tdee
+from app.models.activity_profile import ActivityProfile
 from app.models.user import User
 from app.models.user_goal import UserGoal
 from app.models.user_profile import UserProfile
@@ -33,15 +34,27 @@ class GoalService:
             goal.is_active = False
             goal.ended_at = datetime.now(timezone.utc)
 
-    def _get_required_profile_for_calculation(self, user_id: str) -> UserProfile:
+    def _get_required_profile_for_calculation(
+        self,
+        user_id: str,
+    ) -> tuple[UserProfile, ActivityProfile]:
         profile = self.db.scalar(
             select(UserProfile).where(UserProfile.user_id == user_id)
+        )
+        activity_profile = self.db.scalar(
+            select(ActivityProfile).where(ActivityProfile.user_id == user_id)
         )
 
         if profile is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Profile is required before creating a calculated goal.",
+            )
+
+        if activity_profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Activity profile is required before creating a calculated goal.",
             )
 
         missing_fields: list[str] = []
@@ -54,8 +67,8 @@ class GoalService:
             missing_fields.append("height_cm")
         if profile.current_weight_kg is None:
             missing_fields.append("current_weight_kg")
-        if profile.activity_level is None:
-            missing_fields.append("activity_level")
+        if activity_profile.activity_level is None:
+            missing_fields.append("activity_profile.activity_level")
 
         if missing_fields:
             raise HTTPException(
@@ -66,10 +79,10 @@ class GoalService:
                 ),
             )
 
-        return profile
+        return profile, activity_profile
 
     def _build_calculated_goal(self, current_user: User, payload: UserGoalCreateRequest) -> UserGoal:
-        profile = self._get_required_profile_for_calculation(current_user.id)
+        profile, activity_profile = self._get_required_profile_for_calculation(current_user.id)
 
         bmr_input = BMRInput(
             age=profile.age,  # type: ignore[arg-type]
@@ -85,7 +98,7 @@ class GoalService:
             )
             estimated_tdee = calculate_tdee(
                 estimated_bmr,
-                profile.activity_level,  # type: ignore[arg-type]
+                activity_profile.activity_level,  # type: ignore[arg-type]
             )
             target_calories = calculate_goal_calories(
                 estimated_tdee,

@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.routes.activity import router as activity_router
 from app.api.routes.admin import router as admin_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.chat import router as chat_router
@@ -19,6 +20,7 @@ api_router = APIRouter()
 api_router.include_router(health_router, prefix="/health", tags=["Health"])
 api_router.include_router(auth_router, prefix="/auth", tags=["Auth"])
 api_router.include_router(users_router, prefix="/users", tags=["Users"])
+api_router.include_router(activity_router, prefix="/activity", tags=["Activity"])
 api_router.include_router(goals_router, prefix="/goals", tags=["Goals"])
 api_router.include_router(meals_router, prefix="/meals", tags=["Meals"])
 api_router.include_router(recipes_router, prefix="/recipes", tags=["Recipes"])

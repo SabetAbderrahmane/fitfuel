@@ -33,10 +33,14 @@ class TimestampMixin:
     )
 
 
+from app.models.activity_log import ActivityLog  # noqa: E402,F401
+from app.models.activity_profile import ActivityProfile  # noqa: E402,F401
 from app.models.ai_feedback_history import AIFeedbackHistory  # noqa: E402,F401
+from app.models.allergy import Allergy  # noqa: E402,F401
 from app.models.audit_log import AuditLog  # noqa: E402,F401
 from app.models.chat_message import ChatMessage  # noqa: E402,F401
 from app.models.chat_session import ChatSession  # noqa: E402,F401
+from app.models.dietary_preference import DietaryPreference  # noqa: E402,F401
 from app.models.failed_login_attempt import FailedLoginAttempt  # noqa: E402,F401
 from app.models.food_item import FoodItem  # noqa: E402,F401
 from app.models.food_log import FoodLog  # noqa: E402,F401

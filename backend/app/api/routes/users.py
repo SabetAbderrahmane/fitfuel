@@ -35,15 +35,14 @@ async def get_my_profile(
     db: Session = Depends(get_db),
 ) -> UserProfileResponse:
     service = UserService(db)
-    profile = service.get_profile(current_user)
 
-    if profile is None:
+    try:
+        return service.get_full_profile_response(current_user)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Profile not found for this user.",
-        )
-
-    return service.to_profile_response(profile)
+            detail=str(exc),
+        ) from exc
 
 
 @router.put(
