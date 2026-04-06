@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.ai.nutrition.bmr import BMRInput, calculate_bmr
@@ -11,6 +12,7 @@ from app.models.activity_profile import ActivityProfile
 from app.models.user import User
 from app.models.user_goal import UserGoal
 from app.models.user_profile import UserProfile
+from app.repositories.goal_repository import GoalRepository
 from app.schemas.goal import UserGoalCreateRequest
 
 
@@ -21,28 +23,25 @@ class GoalService:
 
     def __init__(self, db: Session) -> None:
         self.db = db
+        self.goal_repository = GoalRepository(db)
 
     def _deactivate_existing_goals(self, user_id: str) -> None:
-        active_goals = self.db.scalars(
-            select(UserGoal).where(
-                UserGoal.user_id == user_id,
-                UserGoal.is_active.is_(True),
-            )
-        ).all()
+        active_goals = self.goal_repository.list_for_user(user_id, limit=1000, offset=0)
+        now = datetime.now(timezone.utc)
 
         for goal in active_goals:
-            goal.is_active = False
-            goal.ended_at = datetime.now(timezone.utc)
+            if goal.is_active:
+                goal.is_active = False
+                goal.ended_at = now
+                self.db.add(goal)
 
     def _get_required_profile_for_calculation(
         self,
         user_id: str,
     ) -> tuple[UserProfile, ActivityProfile]:
-        profile = self.db.scalar(
-            select(UserProfile).where(UserProfile.user_id == user_id)
-        )
-        activity_profile = self.db.scalar(
-            select(ActivityProfile).where(ActivityProfile.user_id == user_id)
+        profile = self.db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
+        activity_profile = (
+            self.db.query(ActivityProfile).filter(ActivityProfile.user_id == user_id).first()
         )
 
         if profile is None:
@@ -81,7 +80,11 @@ class GoalService:
 
         return profile, activity_profile
 
-    def _build_calculated_goal(self, current_user: User, payload: UserGoalCreateRequest) -> UserGoal:
+    def _build_calculated_goal(
+        self,
+        current_user: User,
+        payload: UserGoalCreateRequest,
+    ) -> UserGoal:
         profile, activity_profile = self._get_required_profile_for_calculation(current_user.id)
 
         bmr_input = BMRInput(
@@ -133,7 +136,11 @@ class GoalService:
             is_active=True,
         )
 
-    def _build_manual_goal(self, current_user: User, payload: UserGoalCreateRequest) -> UserGoal:
+    def _build_manual_goal(
+        self,
+        current_user: User,
+        payload: UserGoalCreateRequest,
+    ) -> UserGoal:
         required_manual_fields = {
             "target_calories": payload.target_calories,
             "target_protein_g": payload.target_protein_g,
@@ -145,11 +152,7 @@ class GoalService:
         if missing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Manual goal mode requires these fields: "
-                    + ", ".join(missing)
-                    + "."
-                ),
+                detail="Manual goal mode requires these fields: " + ", ".join(missing) + ".",
             )
 
         return UserGoal(
@@ -188,23 +191,10 @@ class GoalService:
         return new_goal
 
     def list_goals(self, current_user: User) -> list[UserGoal]:
-        return list(
-            self.db.scalars(
-                select(UserGoal)
-                .where(UserGoal.user_id == current_user.id)
-                .order_by(desc(UserGoal.started_at))
-            ).all()
-        )
+        return self.goal_repository.list_for_user(current_user.id)
 
     def get_current_goal(self, current_user: User) -> UserGoal:
-        goal = self.db.scalar(
-            select(UserGoal)
-            .where(
-                UserGoal.user_id == current_user.id,
-                UserGoal.is_active.is_(True),
-            )
-            .order_by(desc(UserGoal.started_at))
-        )
+        goal = self.goal_repository.get_active_for_user(current_user.id)
 
         if goal is None:
             raise HTTPException(

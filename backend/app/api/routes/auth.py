@@ -9,6 +9,7 @@ from app.schemas.auth import (
     UserLoginRequest,
     UserRegisterRequest,
 )
+from app.schemas.common import MessageResponse
 from app.services.auth_service import (
     AuthService,
     get_auth_service,
@@ -85,6 +86,7 @@ async def refresh_token(
 
 @router.post(
     "/logout",
+    response_model=MessageResponse,
     status_code=status.HTTP_200_OK,
     summary="Revoke one refresh token",
 )
@@ -93,7 +95,7 @@ async def logout(
     request: Request,
     current_user: User = Depends(get_current_user),
     auth_service: AuthService = Depends(get_auth_service),
-) -> dict[str, str]:
+) -> MessageResponse:
     ip_address, user_agent = get_request_context(request)
     auth_service.revoke_refresh_token(
         current_user=current_user,
@@ -101,11 +103,12 @@ async def logout(
         ip_address=ip_address,
         user_agent=user_agent,
     )
-    return {"message": "Refresh token revoked successfully."}
+    return MessageResponse(message="Refresh token revoked successfully.")
 
 
 @router.post(
     "/logout-all",
+    response_model=MessageResponse,
     status_code=status.HTTP_200_OK,
     summary="Revoke all refresh tokens for current user",
 )
@@ -113,14 +116,16 @@ async def logout_all(
     request: Request,
     current_user: User = Depends(get_current_user),
     auth_service: AuthService = Depends(get_auth_service),
-) -> dict[str, str]:
+) -> MessageResponse:
     ip_address, user_agent = get_request_context(request)
     revoked_count = auth_service.revoke_all_refresh_tokens(
         current_user=current_user,
         ip_address=ip_address,
         user_agent=user_agent,
     )
-    return {"message": f"Revoked {revoked_count} refresh token(s)."}
+    return MessageResponse(
+        message=f"Revoked {revoked_count} refresh token(s)."
+    )
 
 
 @router.get(

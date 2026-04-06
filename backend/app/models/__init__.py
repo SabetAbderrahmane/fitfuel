@@ -14,6 +14,7 @@ from app.models.grocery_list import GroceryList
 from app.models.grocery_list_item import GroceryListItem
 from app.models.meal_plan import MealPlan
 from app.models.meal_plan_item import MealPlanItem
+from app.models.meal_template import MealTemplate
 from app.models.nutrition_fact import NutritionFact
 from app.models.photo_prediction import PhotoPrediction
 from app.models.photo_upload import PhotoUpload
@@ -38,6 +39,7 @@ __all__ = [
     "NutritionFact",
     "Recipe",
     "RecipeIngredient",
+    "MealTemplate",
     "FoodLog",
     "FoodLogItem",
     "WeightLog",

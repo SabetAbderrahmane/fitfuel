@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.models.activity_profile import ActivityProfile
 from app.models.allergy import Allergy
 from app.models.dietary_preference import DietaryPreference
 from app.models.user import User
 from app.models.user_profile import UserProfile
+from app.repositories.user_repository import UserRepository
 from app.schemas.user import (
     ActivityProfileResponse,
-    DietaryPreferenceResponse,
     AllergyResponse,
+    DietaryPreferenceResponse,
     UserProfileResponse,
     UserProfileUpsertRequest,
 )
@@ -24,12 +25,11 @@ class UserService:
 
     def __init__(self, db: Session) -> None:
         self.db = db
+        self.user_repository = UserRepository(db)
 
     def get_profile(self, current_user: User) -> UserProfile | None:
         return self.db.scalar(
-            select(UserProfile)
-            .options(selectinload(UserProfile.user))
-            .where(UserProfile.user_id == current_user.id)
+            select(UserProfile).where(UserProfile.user_id == current_user.id)
         )
 
     def get_activity_profile(self, current_user: User) -> ActivityProfile | None:
@@ -66,10 +66,10 @@ class UserService:
             profile = UserProfile(user_id=current_user.id)
             self.db.add(profile)
 
-        profile.first_name = payload.first_name
-        profile.last_name = payload.last_name
+        profile.first_name = payload.first_name.strip() if payload.first_name else None
+        profile.last_name = payload.last_name.strip() if payload.last_name else None
         profile.age = payload.age
-        profile.sex = payload.sex
+        profile.sex = payload.sex.strip() if payload.sex else None
         profile.height_cm = payload.height_cm
         profile.start_weight_kg = payload.start_weight_kg
         profile.current_weight_kg = payload.current_weight_kg
@@ -80,11 +80,23 @@ class UserService:
                 activity_profile = ActivityProfile(user_id=current_user.id)
                 self.db.add(activity_profile)
 
-            activity_profile.activity_level = payload.activity_profile.activity_level
+            activity_profile.activity_level = (
+                payload.activity_profile.activity_level.strip()
+                if payload.activity_profile.activity_level
+                else None
+            )
             activity_profile.workout_days_per_week = payload.activity_profile.workout_days_per_week
-            activity_profile.preferred_workout_style = payload.activity_profile.preferred_workout_style
+            activity_profile.preferred_workout_style = (
+                payload.activity_profile.preferred_workout_style.strip()
+                if payload.activity_profile.preferred_workout_style
+                else None
+            )
             activity_profile.daily_step_goal = payload.activity_profile.daily_step_goal
-            activity_profile.notes = payload.activity_profile.notes
+            activity_profile.notes = (
+                payload.activity_profile.notes.strip()
+                if payload.activity_profile.notes
+                else None
+            )
 
         existing_allergies = self.list_allergies(current_user)
         for item in existing_allergies:

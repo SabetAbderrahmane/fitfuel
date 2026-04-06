@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 from datetime import date
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, desc, select
 from sqlalchemy.orm import Session
 
 from app.models.food_log import FoodLog
@@ -9,6 +10,9 @@ from app.models.progress_snapshot import ProgressSnapshot
 from app.models.user import User
 from app.models.user_goal import UserGoal
 from app.models.weight_log import WeightLog
+from app.repositories.food_log_repository import FoodLogRepository
+from app.repositories.goal_repository import GoalRepository
+from app.repositories.progress_repository import ProgressRepository
 from app.schemas.progress import WeightLogCreateRequest
 
 
@@ -19,6 +23,9 @@ class ProgressService:
 
     def __init__(self, db: Session) -> None:
         self.db = db
+        self.food_log_repository = FoodLogRepository(db)
+        self.goal_repository = GoalRepository(db)
+        self.progress_repository = ProgressRepository(db)
 
     def create_weight_log(
         self,
@@ -44,24 +51,14 @@ class ProgressService:
         limit: int = 30,
         offset: int = 0,
     ) -> list[WeightLog]:
-        statement: Select[tuple[WeightLog]] = (
-            select(WeightLog)
-            .where(WeightLog.user_id == current_user.id)
-            .order_by(desc(WeightLog.logged_for_date), desc(WeightLog.created_at))
-            .offset(offset)
-            .limit(limit)
+        return self.progress_repository.list_weight_logs_for_user(
+            current_user.id,
+            limit=limit,
+            offset=offset,
         )
-        return list(self.db.scalars(statement).all())
 
     def _get_active_goal(self, user_id: str) -> UserGoal:
-        goal = self.db.scalar(
-            select(UserGoal)
-            .where(
-                UserGoal.user_id == user_id,
-                UserGoal.is_active.is_(True),
-            )
-            .order_by(desc(UserGoal.started_at))
-        )
+        goal = self.goal_repository.get_active_for_user(user_id)
 
         if goal is None:
             raise HTTPException(
@@ -76,28 +73,14 @@ class ProgressService:
         user_id: str,
         target_date: date,
     ) -> WeightLog | None:
-        return self.db.scalar(
-            select(WeightLog)
-            .where(
-                WeightLog.user_id == user_id,
-                WeightLog.logged_for_date <= target_date,
-            )
-            .order_by(desc(WeightLog.logged_for_date), desc(WeightLog.created_at))
-        )
+        return self.progress_repository.get_latest_weight_on_or_before(user_id, target_date)
 
     def _get_food_logs_for_date(
         self,
         user_id: str,
         target_date: date,
     ) -> list[FoodLog]:
-        return list(
-            self.db.scalars(
-                select(FoodLog).where(
-                    FoodLog.user_id == user_id,
-                    FoodLog.logged_for_date == target_date,
-                )
-            ).all()
-        )
+        return self.food_log_repository.list_for_user_and_date(user_id, target_date)
 
     @staticmethod
     def _adherence_percent(consumed: float, target: float) -> float:
@@ -129,10 +112,7 @@ class ProgressService:
         snapshot_date: date,
     ) -> ProgressSnapshot:
         active_goal = self._get_active_goal(current_user.id)
-        latest_weight = self._get_latest_weight_on_or_before(
-            current_user.id,
-            snapshot_date,
-        )
+        latest_weight = self._get_latest_weight_on_or_before(current_user.id, snapshot_date)
         food_logs = self._get_food_logs_for_date(current_user.id, snapshot_date)
 
         consumed_calories = round(sum(log.total_calories for log in food_logs), 2)
@@ -164,11 +144,9 @@ class ProgressService:
             fat_pct=fat_adherence_pct,
         )
 
-        existing_snapshot = self.db.scalar(
-            select(ProgressSnapshot).where(
-                ProgressSnapshot.user_id == current_user.id,
-                ProgressSnapshot.snapshot_date == snapshot_date,
-            )
+        existing_snapshot = self.progress_repository.get_snapshot_for_user_and_date(
+            current_user.id,
+            snapshot_date,
         )
 
         snapshot = existing_snapshot or ProgressSnapshot(
@@ -213,25 +191,20 @@ class ProgressService:
         limit: int = 30,
         offset: int = 0,
     ) -> list[ProgressSnapshot]:
-        statement: Select[tuple[ProgressSnapshot]] = (
-            select(ProgressSnapshot)
-            .where(ProgressSnapshot.user_id == current_user.id)
-            .order_by(desc(ProgressSnapshot.snapshot_date), desc(ProgressSnapshot.created_at))
-            .offset(offset)
-            .limit(limit)
+        return self.progress_repository.list_snapshots_for_user(
+            current_user.id,
+            limit=limit,
+            offset=offset,
         )
-        return list(self.db.scalars(statement).all())
 
     def get_progress_snapshot(
         self,
         current_user: User,
         snapshot_id: str,
     ) -> ProgressSnapshot:
-        snapshot = self.db.scalar(
-            select(ProgressSnapshot).where(
-                ProgressSnapshot.id == snapshot_id,
-                ProgressSnapshot.user_id == current_user.id,
-            )
+        snapshot = self.progress_repository.get_snapshot_for_user(
+            current_user.id,
+            snapshot_id,
         )
 
         if snapshot is None:

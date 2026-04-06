@@ -49,6 +49,7 @@ from app.models.grocery_list import GroceryList  # noqa: E402,F401
 from app.models.grocery_list_item import GroceryListItem  # noqa: E402,F401
 from app.models.meal_plan import MealPlan  # noqa: E402,F401
 from app.models.meal_plan_item import MealPlanItem  # noqa: E402,F401
+from app.models.meal_template import MealTemplate  # noqa: E402,F401
 from app.models.nutrition_fact import NutritionFact  # noqa: E402,F401
 from app.models.photo_prediction import PhotoPrediction  # noqa: E402,F401
 from app.models.photo_upload import PhotoUpload  # noqa: E402,F401

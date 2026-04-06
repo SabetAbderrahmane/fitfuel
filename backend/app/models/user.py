@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from app.models.food_log import FoodLog
     from app.models.grocery_list import GroceryList
     from app.models.meal_plan import MealPlan
+    from app.models.meal_template import MealTemplate
     from app.models.photo_upload import PhotoUpload
     from app.models.progress_snapshot import ProgressSnapshot
     from app.models.recipe import Recipe
@@ -130,6 +131,11 @@ class User(Base, TimestampMixin):
         back_populates="user",
         cascade="all, delete-orphan",
         order_by="desc(MealPlan.plan_date)",
+    )
+    meal_templates: Mapped[list[MealTemplate]] = relationship(
+        "MealTemplate",
+        back_populates="created_by_user",
+        order_by="desc(MealTemplate.created_at)",
     )
     photo_uploads: Mapped[list[PhotoUpload]] = relationship(
         "PhotoUpload",

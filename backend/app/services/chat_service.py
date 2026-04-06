@@ -1,31 +1,30 @@
 from __future__ import annotations
 
-from sqlalchemy import Select, desc, func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
+from rapidfuzz import fuzz
 
 from app.models.chat_message import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.food_item import FoodItem
-from app.models.meal_plan import MealPlan
 from app.models.recipe import Recipe
 from app.models.user import User
-from app.models.user_goal import UserGoal
+from app.repositories.chat_repository import ChatRepository
+from app.repositories.goal_repository import GoalRepository
+from app.repositories.meal_plan_repository import MealPlanRepository
 from app.schemas.chat import ChatMessageCreateRequest, ChatSessionCreateRequest
-from rapidfuzz import fuzz
 
 
 class ChatService:
     """
     Deterministic meal assistant service.
-
-    This version intentionally avoids using an external LLM so that:
-    - nutrition values stay tied to your database
-    - responses are explainable
-    - behavior remains thesis-safe and reproducible
     """
 
     def __init__(self, db: Session) -> None:
         self.db = db
+        self.chat_repository = ChatRepository(db)
+        self.goal_repository = GoalRepository(db)
+        self.meal_plan_repository = MealPlanRepository(db)
 
     def create_session(
         self,
@@ -53,126 +52,29 @@ class ChatService:
         limit: int = 20,
         offset: int = 0,
     ) -> list[ChatSession]:
-        statement: Select[tuple[ChatSession]] = (
-            select(ChatSession)
-            .where(ChatSession.user_id == current_user.id)
-            .order_by(desc(ChatSession.updated_at))
-            .offset(offset)
-            .limit(limit)
+        return self.chat_repository.list_sessions_for_user(
+            current_user.id,
+            limit=limit,
+            offset=offset,
         )
-        return list(self.db.scalars(statement).all())
 
     def get_session(
         self,
         current_user: User,
         chat_session_id: str,
     ) -> ChatSession:
-        statement = (
-            select(ChatSession)
-            .options(selectinload(ChatSession.messages))
-            .where(
-                ChatSession.id == chat_session_id,
-                ChatSession.user_id == current_user.id,
-            )
+        session = self.chat_repository.get_session_for_user(
+            current_user.id,
+            chat_session_id,
         )
-        session = self.db.scalar(statement)
 
         if session is None:
             raise ValueError("Chat session not found.")
 
         return session
 
-    def _get_active_goal(self, user_id: str) -> UserGoal | None:
-        return self.db.scalar(
-            select(UserGoal)
-            .where(
-                UserGoal.user_id == user_id,
-                UserGoal.is_active.is_(True),
-            )
-            .order_by(desc(UserGoal.started_at))
-        )
-
-    def _get_latest_meal_plan(self, user_id: str) -> MealPlan | None:
-        return self.db.scalar(
-            select(MealPlan)
-            .options(selectinload(MealPlan.items))
-            .where(MealPlan.user_id == user_id)
-            .order_by(desc(MealPlan.plan_date), desc(MealPlan.created_at))
-        )
-
-    def _list_top_protein_foods(self, limit: int = 5) -> list[FoodItem]:
-        statement = (
-            select(FoodItem)
-            .options(selectinload(FoodItem.nutrition_fact))
-            .join(FoodItem.nutrition_fact)
-            .where(FoodItem.is_active.is_(True))
-            .order_by(desc(func.coalesce(FoodItem.nutrition_fact.property.mapper.class_.protein_g_per_100g, 0)))
-            .limit(limit)
-        )
-        # The join above is enough to access nutrition facts later.
-        return list(self.db.scalars(statement).all())
-
-    def _list_top_protein_foods_safe(self, limit: int = 5) -> list[FoodItem]:
-        items = list(
-            self.db.scalars(
-                select(FoodItem)
-                .options(selectinload(FoodItem.nutrition_fact))
-                .where(FoodItem.is_active.is_(True))
-                .order_by(FoodItem.name.asc())
-            ).all()
-        )
-        items = [item for item in items if item.nutrition_fact is not None]
-        items.sort(
-            key=lambda item: item.nutrition_fact.protein_g_per_100g if item.nutrition_fact else 0,
-            reverse=True,
-        )
-        return items[:limit]
-
-    def _list_matching_recipes(self, query_text: str, limit: int = 3) -> list[Recipe]:
-        pattern = f"%{query_text.strip()}%"
-        statement = (
-            select(Recipe)
-            .options(selectinload(Recipe.ingredients))
-            .where(
-                Recipe.is_active.is_(True),
-                or_(
-                    Recipe.name.ilike(pattern),
-                    Recipe.description.ilike(pattern),
-                    Recipe.category.ilike(pattern),
-                    Recipe.diet_type.ilike(pattern),
-                ),
-            )
-            .order_by(Recipe.name.asc())
-            .limit(limit)
-        )
-        return list(self.db.scalars(statement).all())
-
-    def _find_best_matching_food(self, query_text: str) -> FoodItem | None:
-        items = list(
-            self.db.scalars(
-                select(FoodItem)
-                .options(selectinload(FoodItem.nutrition_fact))
-                .where(FoodItem.is_active.is_(True))
-            ).all()
-        )
-
-        best_item: FoodItem | None = None
-        best_score = 0.0
-        lowered = query_text.lower()
-
-        for item in items:
-            score = float(fuzz.token_sort_ratio(lowered, item.name.lower()))
-            if score > best_score:
-                best_score = score
-                best_item = item
-
-        if best_item is None or best_score < 55:
-            return None
-
-        return best_item
-
-    def _build_goal_summary(self, current_user: User) -> str:
-        goal = self._get_active_goal(current_user.id)
+    def _get_active_goal_summary(self, current_user: User) -> str:
+        goal = self.goal_repository.get_active_for_user(current_user.id)
         if goal is None:
             return (
                 "You do not have an active goal yet. "
@@ -188,8 +90,24 @@ class ChatService:
             f"- Calculation mode: **{goal.calculation_mode}**"
         )
 
+    def _list_top_protein_foods(self, limit: int = 5) -> list[FoodItem]:
+        items = list(
+            self.db.scalars(
+                select(FoodItem)
+                .options(selectinload(FoodItem.nutrition_fact))
+                .where(FoodItem.is_active.is_(True))
+                .order_by(FoodItem.name.asc())
+            ).all()
+        )
+        items = [item for item in items if item.nutrition_fact is not None]
+        items.sort(
+            key=lambda item: item.nutrition_fact.protein_g_per_100g if item.nutrition_fact else 0,
+            reverse=True,
+        )
+        return items[:limit]
+
     def _build_high_protein_suggestion(self) -> str:
-        foods = self._list_top_protein_foods_safe(limit=5)
+        foods = self._list_top_protein_foods(limit=5)
 
         if not foods:
             return "I could not find any food catalog items with nutrition facts yet."
@@ -207,7 +125,23 @@ class ChatService:
         return "\n".join(lines)
 
     def _build_recipe_suggestion(self, content: str) -> str:
-        recipes = self._list_matching_recipes(content, limit=3)
+        pattern = f"%{content.strip()}%"
+        recipes = list(
+            self.db.scalars(
+                select(Recipe)
+                .options(selectinload(Recipe.ingredients))
+                .where(
+                    Recipe.is_active.is_(True),
+                    or_(
+                        Recipe.name.ilike(pattern),
+                        Recipe.description.ilike(pattern),
+                        Recipe.category.ilike(pattern),
+                        Recipe.diet_type.ilike(pattern),
+                    ),
+                )
+                .limit(3)
+            ).all()
+        )
 
         if not recipes:
             recipes = list(
@@ -236,7 +170,7 @@ class ChatService:
         return "\n".join(lines)
 
     def _build_meal_plan_summary(self, current_user: User) -> str:
-        plan = self._get_latest_meal_plan(current_user.id)
+        plan = self.meal_plan_repository.get_latest_for_user(current_user.id)
 
         if plan is None:
             return "You do not have any meal plans yet."
@@ -258,6 +192,30 @@ class ChatService:
             )
 
         return "\n".join(lines)
+
+    def _find_best_matching_food(self, query_text: str) -> FoodItem | None:
+        items = list(
+            self.db.scalars(
+                select(FoodItem)
+                .options(selectinload(FoodItem.nutrition_fact))
+                .where(FoodItem.is_active.is_(True))
+            ).all()
+        )
+
+        best_item: FoodItem | None = None
+        best_score = 0.0
+        lowered = query_text.lower()
+
+        for item in items:
+            score = float(fuzz.token_sort_ratio(lowered, item.name.lower()))
+            if score > best_score:
+                best_score = score
+                best_item = item
+
+        if best_item is None or best_score < 55:
+            return None
+
+        return best_item
 
     def _build_swap_suggestion(self, content: str) -> str:
         referenced_food = self._find_best_matching_food(content)
@@ -344,7 +302,7 @@ class ChatService:
         intent = self._detect_intent(content)
 
         if intent == "goal_summary":
-            return intent, self._build_goal_summary(current_user)
+            return intent, self._get_active_goal_summary(current_user)
 
         if intent == "protein_suggestion":
             return intent, self._build_high_protein_suggestion()

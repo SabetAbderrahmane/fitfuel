@@ -9,6 +9,7 @@ from app.api.routes.goals import router as goals_router
 from app.api.routes.grocery_lists import router as grocery_lists_router
 from app.api.routes.health import router as health_router
 from app.api.routes.meal_plans import router as meal_plans_router
+from app.api.routes.meal_templates import router as meal_templates_router
 from app.api.routes.meals import router as meals_router
 from app.api.routes.photos import router as photos_router
 from app.api.routes.progress import router as progress_router
@@ -24,6 +25,7 @@ api_router.include_router(activity_router, prefix="/activity", tags=["Activity"]
 api_router.include_router(goals_router, prefix="/goals", tags=["Goals"])
 api_router.include_router(meals_router, prefix="/meals", tags=["Meals"])
 api_router.include_router(recipes_router, prefix="/recipes", tags=["Recipes"])
+api_router.include_router(meal_templates_router, prefix="/meal-templates", tags=["Meal Templates"])
 api_router.include_router(food_logs_router, prefix="/food-logs", tags=["Food Logs"])
 api_router.include_router(progress_router, prefix="/progress", tags=["Progress"])
 api_router.include_router(meal_plans_router, prefix="/meal-plans", tags=["Meal Plans"])
