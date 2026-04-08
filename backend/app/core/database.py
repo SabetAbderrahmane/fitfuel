@@ -1,28 +1,28 @@
+from __future__ import annotations
+
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.base import Base
 from app.db.session import engine
 
 
-def create_db_and_tables() -> None:
-    """
-    Create all registered tables.
-
-    Use this only for early local development/bootstrap.
-    Once Alembic is in place, schema changes should be managed
-    through migrations instead of create_all().
-    """
-    Base.metadata.create_all(bind=engine)
-
-
 def check_database_connection() -> bool:
     """
-    Run a lightweight connectivity check against the configured database.
+    Verify that SQLAlchemy can open a connection to the configured database.
     """
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
         return True
-    except SQLAlchemyError:
+    except Exception:
         return False
+
+
+def create_db_and_tables() -> None:
+    """
+    Import all model modules, then create tables.
+    Importing here avoids circular imports in app.db.base.
+    """
+    import app.models  # noqa: F401
+
+    Base.metadata.create_all(bind=engine)

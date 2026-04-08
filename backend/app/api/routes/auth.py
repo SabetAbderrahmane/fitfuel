@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Request, status
+from fastapi.security import OAuth2PasswordRequestForm
 
 from app.models.user import User
 from app.schemas.auth import (
@@ -37,16 +38,44 @@ async def register(
 @router.post(
     "/login",
     response_model=TokenResponse,
-    summary="Authenticate user and return access + refresh tokens",
+    summary="Authenticate user with OAuth2 password form and return access + refresh tokens",
 )
 async def login(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> TokenResponse:
+    ip_address, user_agent = get_request_context(request)
+    user = auth_service.authenticate_user(
+        identifier=form_data.username,
+        password=form_data.password,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    access_token, refresh_token = auth_service.create_token_pair(
+        user=user,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+    )
+
+
+@router.post(
+    "/login-json",
+    response_model=TokenResponse,
+    summary="Authenticate user with JSON and return access + refresh tokens",
+)
+async def login_json(
     payload: UserLoginRequest,
     request: Request,
     auth_service: AuthService = Depends(get_auth_service),
 ) -> TokenResponse:
     ip_address, user_agent = get_request_context(request)
     user = auth_service.authenticate_user(
-        email=payload.email,
+        identifier=payload.email,
         password=payload.password,
         ip_address=ip_address,
         user_agent=user_agent,

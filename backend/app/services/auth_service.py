@@ -5,7 +5,7 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy import func, or_, select
@@ -65,13 +65,13 @@ class AuthService:
 
     def _write_failed_login(
         self,
-        email: str,
+        identifier: str,
         failure_reason: str,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> None:
         failed_attempt = FailedLoginAttempt(
-            email=email.lower(),
+            email=identifier.lower(),
             ip_address=ip_address,
             user_agent=user_agent,
             failure_reason=failure_reason,
@@ -103,8 +103,8 @@ class AuthService:
         existing_user = self.db.scalar(
             select(User).where(
                 or_(
-                    User.email == payload.email.lower(),
-                    User.username == payload.username,
+                    func.lower(User.email) == payload.email.lower(),
+                    func.lower(User.username) == payload.username.lower(),
                 )
             )
         )
@@ -139,20 +139,25 @@ class AuthService:
 
     def authenticate_user(
         self,
-        email: str,
+        identifier: str,
         password: str,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> User:
-        normalized_email = email.lower()
+        normalized_identifier = identifier.strip().lower()
 
         user = self.db.scalar(
-            select(User).where(User.email == normalized_email)
+            select(User).where(
+                or_(
+                    func.lower(User.email) == normalized_identifier,
+                    func.lower(User.username) == normalized_identifier,
+                )
+            )
         )
 
         if not user:
             self._write_failed_login(
-                email=normalized_email,
+                identifier=normalized_identifier,
                 failure_reason="user_not_found",
                 ip_address=ip_address,
                 user_agent=user_agent,
@@ -160,13 +165,13 @@ class AuthService:
             self.db.commit()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password.",
+                detail="Invalid email/username or password.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
         if not verify_password(password, user.hashed_password):
             self._write_failed_login(
-                email=normalized_email,
+                identifier=normalized_identifier,
                 failure_reason="invalid_password",
                 ip_address=ip_address,
                 user_agent=user_agent,
@@ -174,13 +179,13 @@ class AuthService:
             self.db.commit()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password.",
+                detail="Invalid email/username or password.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
         if not user.is_active:
             self._write_failed_login(
-                email=normalized_email,
+                identifier=normalized_identifier,
                 failure_reason="inactive_account",
                 ip_address=ip_address,
                 user_agent=user_agent,
@@ -399,9 +404,12 @@ def get_current_admin(
     return current_user
 
 
-def get_request_context(
-    request: Request,
-    user_agent: str | None = Header(default=None),
-) -> tuple[str | None, str | None]:
-    client_ip = request.client.host if request.client else None
+def get_request_context(request: Request) -> tuple[str | None, str | None]:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        client_ip = request.client.host if request.client else None
+
+    user_agent = request.headers.get("user-agent")
     return client_ip, user_agent

@@ -31,33 +31,3 @@ class TimestampMixin:
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
-
-
-from app.models.activity_log import ActivityLog  # noqa: E402,F401
-from app.models.activity_profile import ActivityProfile  # noqa: E402,F401
-from app.models.ai_feedback_history import AIFeedbackHistory  # noqa: E402,F401
-from app.models.allergy import Allergy  # noqa: E402,F401
-from app.models.audit_log import AuditLog  # noqa: E402,F401
-from app.models.chat_message import ChatMessage  # noqa: E402,F401
-from app.models.chat_session import ChatSession  # noqa: E402,F401
-from app.models.dietary_preference import DietaryPreference  # noqa: E402,F401
-from app.models.failed_login_attempt import FailedLoginAttempt  # noqa: E402,F401
-from app.models.food_item import FoodItem  # noqa: E402,F401
-from app.models.food_log import FoodLog  # noqa: E402,F401
-from app.models.food_log_item import FoodLogItem  # noqa: E402,F401
-from app.models.grocery_list import GroceryList  # noqa: E402,F401
-from app.models.grocery_list_item import GroceryListItem  # noqa: E402,F401
-from app.models.meal_plan import MealPlan  # noqa: E402,F401
-from app.models.meal_plan_item import MealPlanItem  # noqa: E402,F401
-from app.models.meal_template import MealTemplate  # noqa: E402,F401
-from app.models.nutrition_fact import NutritionFact  # noqa: E402,F401
-from app.models.photo_prediction import PhotoPrediction  # noqa: E402,F401
-from app.models.photo_upload import PhotoUpload  # noqa: E402,F401
-from app.models.progress_snapshot import ProgressSnapshot  # noqa: E402,F401
-from app.models.recipe import Recipe  # noqa: E402,F401
-from app.models.recipe_ingredient import RecipeIngredient  # noqa: E402,F401
-from app.models.refresh_token import RefreshToken  # noqa: E402,F401
-from app.models.user import User  # noqa: E402,F401
-from app.models.user_goal import UserGoal  # noqa: E402,F401
-from app.models.user_profile import UserProfile  # noqa: E402,F401
-from app.models.weight_log import WeightLog  # noqa: E402,F401
