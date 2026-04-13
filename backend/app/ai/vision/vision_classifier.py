@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+
+from PIL import Image
 
 from app.ai.vision.confidence import PredictionCandidate, get_top_k_predictions
 from app.core.config import settings
@@ -20,16 +24,12 @@ class ResNet50VisionClassifier:
     """
     Lazy-loaded ResNet50 inference wrapper.
 
-    Modes:
-    1. Custom checkpoint mode:
-       - loads a local fine-tuned checkpoint if VISION_MODEL_PATH exists
-       - expects class labels from VISION_CLASS_NAMES_PATH
-    2. Fallback mode:
-       - loads torchvision's pretrained ResNet50 weights
-       - returns ImageNet labels as a development placeholder
-
-    This keeps the integration ready now while preserving a clean path
-    for your later food-specific training workflow.
+    Improvements in this version:
+    - thread-safe model load
+    - explicit warm-up support
+    - startup preloading support
+    - CUDA autocast path when GPU is available and selected
+    - less user-facing cold-start latency
     """
 
     def __init__(self) -> None:
@@ -38,6 +38,9 @@ class ResNet50VisionClassifier:
         self._class_names: list[str] = []
         self._device = None
         self._model_name = "uninitialized"
+        self._load_lock = threading.Lock()
+        self._is_warmed = False
+        self._use_cuda_autocast = False
 
     @staticmethod
     def _load_class_names(file_path: str) -> list[str]:
@@ -62,6 +65,7 @@ class ResNet50VisionClassifier:
         if isinstance(loaded_object, dict):
             if "state_dict" in loaded_object and isinstance(loaded_object["state_dict"], dict):
                 return loaded_object["state_dict"]
+            return loaded_object
         return loaded_object
 
     @staticmethod
@@ -74,63 +78,121 @@ class ResNet50VisionClassifier:
                 cleaned[key] = value
         return cleaned
 
+    @staticmethod
+    def _resolve_device(torch):
+        requested_device = settings.vision_device.strip().lower()
+
+        if requested_device == "cuda" and torch.cuda.is_available():
+            return torch.device("cuda")
+
+        if (
+            requested_device == "mps"
+            and hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+        ):
+            return torch.device("mps")
+
+        return torch.device("cpu")
+
     def _load_model(self) -> None:
         if self._model is not None:
             return
 
-        try:
+        with self._load_lock:
+            if self._model is not None:
+                return
+
+            try:
+                import torch
+                import torch.nn as nn
+                from torchvision.models import ResNet50_Weights, resnet50
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Torch/TorchVision are not installed. "
+                    "Install torch, torchvision, and pillow before using the inference endpoint."
+                ) from exc
+
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("high")
+
+            device = self._resolve_device(torch)
+
+            if device.type == "cuda":
+                torch.backends.cudnn.benchmark = True
+
+            custom_model_path = settings.vision_model_path.strip()
+            class_names_path = settings.vision_class_names_path.strip()
+
+            weights = ResNet50_Weights.DEFAULT
+            preprocess = weights.transforms()
+
+            if custom_model_path and class_names_path and Path(custom_model_path).exists():
+                class_names = self._load_class_names(class_names_path)
+                if not class_names:
+                    raise RuntimeError("Custom class names file is empty.")
+
+                model = resnet50(weights=None)
+                in_features = model.fc.in_features
+                model.fc = nn.Linear(in_features, len(class_names))
+
+                checkpoint = torch.load(custom_model_path, map_location=device)
+                state_dict = self._extract_state_dict(checkpoint)
+                state_dict = self._strip_module_prefix(state_dict)
+                model.load_state_dict(state_dict, strict=True)
+                model_name = f"resnet50_custom:{Path(custom_model_path).name}"
+            else:
+                model = resnet50(weights=weights)
+                class_names = list(weights.meta.get("categories", []))
+                model_name = f"resnet50_pretrained:{weights.__class__.__name__}.DEFAULT"
+
+            model.eval()
+            model.to(device)
+
+            self._model = model
+            self._preprocess = preprocess
+            self._class_names = class_names
+            self._device = device
+            self._model_name = model_name
+            self._use_cuda_autocast = device.type == "cuda"
+
+    def warm_up(self) -> None:
+        """
+        Force model initialization and run one dummy forward pass so the first
+        real user request does not absorb the cold-start cost.
+        """
+        self._load_model()
+
+        if self._is_warmed:
+            return
+
+        with self._load_lock:
+            if self._is_warmed:
+                return
+
+            assert self._model is not None
+            assert self._preprocess is not None
+            assert self._device is not None
+
             import torch
-            import torch.nn as nn
-            from torchvision.models import ResNet50_Weights, resnet50
-        except ImportError as exc:
-            raise RuntimeError(
-                "Torch/TorchVision are not installed. Install torch, torchvision, and pillow "
-                "before using the inference endpoint."
-            ) from exc
 
-        requested_device = settings.vision_device.strip().lower()
-        if requested_device == "cuda" and torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif requested_device == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
+            dummy_image = Image.new("RGB", (224, 224), color=(127, 127, 127))
+            batch = self._preprocess(dummy_image).unsqueeze(0)
 
-        custom_model_path = settings.vision_model_path.strip()
-        class_names_path = settings.vision_class_names_path.strip()
+            if self._device.type == "cuda":
+                batch = batch.to(self._device, non_blocking=True)
+                autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.float16)
+            else:
+                batch = batch.to(self._device)
+                autocast_ctx = nullcontext()
 
-        # Use official torchvision multi-weight API when running the fallback model.
-        weights = ResNet50_Weights.DEFAULT
-        preprocess = weights.transforms()
+            with torch.inference_mode():
+                with autocast_ctx:
+                    _ = self._model(batch)
 
-        if custom_model_path and class_names_path and Path(custom_model_path).exists():
-            class_names = self._load_class_names(class_names_path)
-            if not class_names:
-                raise RuntimeError("Custom class names file is empty.")
+            if self._device.type == "cuda":
+                torch.cuda.synchronize()
 
-            model = resnet50(weights=None)
-            in_features = model.fc.in_features
-            model.fc = nn.Linear(in_features, len(class_names))
-
-            checkpoint = torch.load(custom_model_path, map_location=device)
-            state_dict = self._extract_state_dict(checkpoint)
-            state_dict = self._strip_module_prefix(state_dict)
-            model.load_state_dict(state_dict, strict=True)
-
-            model_name = f"resnet50_custom:{Path(custom_model_path).name}"
-        else:
-            model = resnet50(weights=weights)
-            class_names = list(weights.meta.get("categories", []))
-            model_name = f"resnet50_pretrained:{weights.__class__.__name__}.DEFAULT"
-
-        model.eval()
-        model.to(device)
-
-        self._model = model
-        self._preprocess = preprocess
-        self._class_names = class_names
-        self._device = device
-        self._model_name = model_name
+            self._is_warmed = True
 
     def infer_pil_image(
         self,
@@ -145,17 +207,24 @@ class ResNet50VisionClassifier:
 
         import torch
 
-        batch = self._preprocess(image).unsqueeze(0).to(self._device)
+        batch = self._preprocess(image).unsqueeze(0)
+
+        if self._device.type == "cuda":
+            batch = batch.to(self._device, non_blocking=True)
+            autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.float16)
+        else:
+            batch = batch.to(self._device)
+            autocast_ctx = nullcontext()
 
         with torch.inference_mode():
-            logits = self._model(batch)
+            with autocast_ctx:
+                logits = self._model(batch)
 
         candidates = get_top_k_predictions(
             logits=logits,
             class_names=self._class_names,
             top_k=max(1, min(top_k, 10)),
         )
-
         top_candidate = candidates[0]
 
         return VisionInferenceResult(
@@ -167,12 +236,15 @@ class ResNet50VisionClassifier:
 
 
 _classifier_instance: ResNet50VisionClassifier | None = None
+_classifier_lock = threading.Lock()
 
 
 def get_vision_classifier() -> ResNet50VisionClassifier:
     global _classifier_instance
 
     if _classifier_instance is None:
-        _classifier_instance = ResNet50VisionClassifier()
+        with _classifier_lock:
+            if _classifier_instance is None:
+                _classifier_instance = ResNet50VisionClassifier()
 
     return _classifier_instance

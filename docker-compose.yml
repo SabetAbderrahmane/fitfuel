@@ -4,11 +4,11 @@ services:
     container_name: fitfuel-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-fitfuel}
-      POSTGRES_USER: ${POSTGRES_USER:-fitfuel}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fitfuel_dev_password}
+      POSTGRES_DB: fitfuel
+      POSTGRES_USER: fitfuel
+      POSTGRES_PASSWORD: 1234567890
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

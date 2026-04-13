@@ -3,6 +3,7 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.ai.vision.vision_classifier import get_vision_classifier
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.exceptions import install_exception_handlers
@@ -36,6 +37,25 @@ def create_application() -> FastAPI:
     )
 
     install_exception_handlers(application)
+
+    @application.on_event("startup")
+    async def preload_vision_model() -> None:
+        """
+        Warm the vision model once at startup so the first inference request
+        does not pay the full ResNet50 cold-start cost.
+        """
+        try:
+            classifier = get_vision_classifier()
+            classifier.warm_up()
+            logger.info(
+                "Vision classifier warmed successfully on startup. device=%s",
+                settings.vision_device,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Vision classifier warm-up skipped or failed: %s",
+                str(exc),
+            )
 
     @application.middleware("http")
     async def request_logging_middleware(request: Request, call_next):
