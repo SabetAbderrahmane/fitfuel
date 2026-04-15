@@ -2,8 +2,9 @@
 
 import { useMutation } from "@tanstack/react-query";
 
-import { loginWithEmail } from "@/features/auth/api/login";
+import { fetchCurrentUser, loginWithEmail } from "@/features/auth/api/login";
 import type {
+  AuthenticatedUserResponse,
   LoginRequest,
   TokenResponse,
 } from "@/features/auth/types/auth.types";
@@ -13,12 +14,22 @@ export type LoginMutationVariables = LoginRequest & {
   rememberMe: boolean;
 };
 
+export type LoginMutationResult = {
+  tokens: TokenResponse;
+  user: AuthenticatedUserResponse;
+};
+
 export function useLoginMutation() {
-  return useMutation<TokenResponse, Error, LoginMutationVariables>({
+  return useMutation<LoginMutationResult, Error, LoginMutationVariables>({
     mutationFn: async ({ rememberMe, ...credentials }) => {
       const tokens = await loginWithEmail(credentials);
       setAuthTokens(tokens, rememberMe);
-      return tokens;
+      const user = await fetchCurrentUser(tokens.access_token);
+
+      return {
+        tokens,
+        user,
+      };
     },
   });
 }

@@ -27,7 +27,7 @@ export function setAuthTokens(tokens: TokenResponse, rememberMe: boolean) {
   storage.setItem(REFRESH_TOKEN_KEY, tokens.refresh_token);
 }
 
-export function getAccessToken() {
+export function getAccessToken(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
@@ -35,16 +35,5 @@ export function getAccessToken() {
   return (
     window.localStorage.getItem(ACCESS_TOKEN_KEY) ??
     window.sessionStorage.getItem(ACCESS_TOKEN_KEY)
-  );
-}
-
-export function getRefreshToken() {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  return (
-    window.localStorage.getItem(REFRESH_TOKEN_KEY) ??
-    window.sessionStorage.getItem(REFRESH_TOKEN_KEY)
   );
 }

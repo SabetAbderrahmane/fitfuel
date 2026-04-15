@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type {
+  AuthenticatedUserResponse,
   LoginRequest,
   TokenResponse,
 } from "@/features/auth/types/auth.types";
@@ -10,11 +11,20 @@ const tokenResponseSchema = z.object({
   refresh_token: z.string().min(1),
 });
 
-function getApiBaseUrl() {
+const authenticatedUserSchema = z.object({
+  id: z.union([z.string(), z.number()]).transform(String),
+  email: z.string().email(),
+  is_active: z.boolean().optional(),
+  is_verified: z.boolean().optional(),
+});
+
+function getApiBaseUrl(): string {
   const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
 
   if (!baseUrl) {
-    return "";
+    throw new Error(
+      "NEXT_PUBLIC_API_BASE_URL is missing. Add it to frontend/.env.local."
+    );
   }
 
   return baseUrl.replace(/\/$/, "");
@@ -66,12 +76,8 @@ export async function loginWithEmail(
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    credentials: "include",
     cache: "no-store",
-    body: JSON.stringify({
-      email: payload.email,
-      password: payload.password,
-    }),
+    body: JSON.stringify(payload),
   });
 
   const responseBody: unknown = await response.json().catch(() => null);
@@ -84,4 +90,28 @@ export async function loginWithEmail(
   }
 
   return tokenResponseSchema.parse(responseBody);
+}
+
+export async function fetchCurrentUser(
+  accessToken: string
+): Promise<AuthenticatedUserResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/me`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    cache: "no-store",
+  });
+
+  const responseBody: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(
+      extractErrorMessage(responseBody) ??
+        "Unable to fetch the authenticated user."
+    );
+  }
+
+  return authenticatedUserSchema.parse(responseBody);
 }

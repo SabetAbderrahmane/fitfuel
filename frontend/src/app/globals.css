@@ -1,25 +1,70 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;700;800;900&display=swap");
 @import "tailwindcss";
 
-:root {
-  color-scheme: dark;
+@theme {
+  --font-headline: "Plus Jakarta Sans", sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  --color-primary: #4edea3;
+  --color-on-primary: #003824;
+  --color-primary-container: #10b981;
+  --color-on-primary-container: #00422b;
+
+  --color-secondary: #ffb95f;
+  --color-on-secondary: #472a00;
+  --color-secondary-container: #ee9800;
+  --color-on-secondary-container: #5b3800;
+
+  --color-tertiary-container: #71a1ff;
+  --color-on-tertiary-container: #00367a;
+
+  --color-background: #0c1322;
+  --color-surface: #0c1322;
+  --color-surface-container-low: #141b2b;
+  --color-surface-container-high: #232a3a;
+  --color-surface-container-highest: #2e3545;
+  --color-on-surface: #dce2f7;
+  --color-on-surface-variant: #bbcabf;
+  --color-outline-variant: #3c4a42;
+  --color-surface-bright: #323949;
+
+  --radius-lg: 2rem;
+  --radius-xl: 3rem;
 }
 
-html,
-body {
-  min-height: 100%;
+@utility glass-panel {
+  background: rgba(46, 53, 69, 0.6);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
 }
 
-body {
-  background: #07111f;
-  color: #f8fafc;
-  font-family: Arial, Helvetica, sans-serif;
+@utility text-glow {
+  text-shadow: 0 0 20px rgba(78, 222, 163, 0.4);
 }
 
-* {
-  box-sizing: border-box;
+@utility kinetic-bg {
+  background:
+    radial-gradient(circle at 0% 0%, #10b981 0%, transparent 40%),
+    radial-gradient(circle at 100% 100%, #141b2b 0%, #0c1322 100%);
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    @apply bg-background font-sans text-on-surface selection:bg-primary selection:text-on-primary;
+  }
+
+  button,
+  a,
+  input {
+    -webkit-tap-highlight-color: transparent;
+  }
 }

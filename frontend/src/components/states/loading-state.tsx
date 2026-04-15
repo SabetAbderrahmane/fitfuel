@@ -2,8 +2,6 @@
 
 import { Loader2 } from "lucide-react";
 
-import { cn } from "@/lib/utils/cn";
-
 type LoadingStateProps = {
   label?: string;
   className?: string;
@@ -14,7 +12,7 @@ export function LoadingState({
   className,
 }: LoadingStateProps) {
   return (
-    <span className={cn("inline-flex items-center gap-2", className)}>
+    <span className={className ?? "inline-flex items-center gap-2"}>
       <Loader2 className="h-4 w-4 animate-spin" />
       <span>{label}</span>
     </span>

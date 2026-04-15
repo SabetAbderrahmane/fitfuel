@@ -1,13 +1,12 @@
-import type { Metadata } from "next";
+import type { ReactNode } from "react";
+import { Providers } from "@/app/providers";
 import "./globals.css";
-import { Providers } from "./providers";
 
-export const metadata: Metadata = {
-  title: "FitFuel AI",
-  description: "AI-powered nutrition and fitness tracking.",
-};
-
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: ReactNode;
+}>) {
   return (
     <html lang="en">
       <body>
