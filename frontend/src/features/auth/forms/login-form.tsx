@@ -9,6 +9,7 @@ import { ArrowRight, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { useLoginMutation } from "@/features/auth/hooks/use-login-mutation";
+import { resolvePostLoginRoute } from "@/features/onboarding/api/onboarding-status";
 import {
   loginSchema,
   type LoginFormValues,
@@ -31,8 +32,9 @@ export function LoginForm() {
 
   const onSubmit = (values: LoginFormValues) => {
     loginMutation.mutate(values, {
-      onSuccess: () => {
-        router.replace("/dashboard");
+      onSuccess: async (tokens) => {
+        const nextRoute = await resolvePostLoginRoute(tokens.access_token);
+        router.replace(nextRoute);
       },
     });
   };
@@ -41,7 +43,7 @@ export function LoginForm() {
     <form className="space-y-6" onSubmit={form.handleSubmit(onSubmit)} noValidate>
       <div className="space-y-2">
         <label
-          className="block text-xs font-bold uppercase tracking-widest text-on-surface-variant px-1"
+          className="block px-1 text-xs font-bold uppercase tracking-widest text-on-surface-variant"
           htmlFor="email"
         >
           Email Address
@@ -53,10 +55,10 @@ export function LoginForm() {
             type="email"
             placeholder="name@company.com"
             autoComplete="email"
-            className="peer w-full bg-surface-container-low border-none rounded-md px-4 py-4 text-on-surface focus:ring-2 focus:ring-primary/20 focus:bg-surface-container-high transition-all outline-none"
+            className="peer w-full rounded-md border-none bg-surface-container-low px-4 py-4 text-on-surface outline-none transition-all focus:bg-surface-container-high focus:ring-2 focus:ring-primary/20"
             {...form.register("email")}
           />
-          <div className="pointer-events-none absolute left-0 top-1/4 h-1/2 w-1 bg-primary rounded-full opacity-0 peer-focus:opacity-100 transition-opacity" />
+          <div className="pointer-events-none absolute left-0 top-1/4 h-1/2 w-1 rounded-full bg-primary opacity-0 transition-opacity peer-focus:opacity-100" />
         </div>
 
         {form.formState.errors.email ? (
@@ -67,7 +69,7 @@ export function LoginForm() {
       </div>
 
       <div className="space-y-2">
-        <div className="flex justify-between items-end px-1">
+        <div className="flex items-end justify-between px-1">
           <label
             className="text-xs font-bold uppercase tracking-widest text-on-surface-variant"
             htmlFor="password"
@@ -76,26 +78,26 @@ export function LoginForm() {
           </label>
 
           <Link
-            className="text-xs font-bold text-primary hover:text-primary/80 transition-colors"
+            className="text-xs font-bold text-primary transition-colors hover:text-primary/80"
             href="/login#forgot-password"
           >
             Forgot password?
           </Link>
         </div>
 
-        <div className="relative group/pass">
+        <div className="relative">
           <input
             id="password"
             type={showPassword ? "text" : "password"}
             placeholder="••••••••"
             autoComplete="current-password"
-            className="peer w-full bg-surface-container-low border-none rounded-md px-4 py-4 text-on-surface focus:ring-2 focus:ring-primary/20 focus:bg-surface-container-high transition-all outline-none"
+            className="peer w-full rounded-md border-none bg-surface-container-low px-4 py-4 text-on-surface outline-none transition-all focus:bg-surface-container-high focus:ring-2 focus:ring-primary/20"
             {...form.register("password")}
           />
 
           <button
             onClick={() => setShowPassword((current) => !current)}
-            className="absolute right-4 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-white transition-colors"
+            className="absolute right-4 top-1/2 -translate-y-1/2 text-on-surface-variant transition-colors hover:text-white"
             type="button"
             aria-label={showPassword ? "Hide password" : "Show password"}
           >
@@ -120,7 +122,7 @@ export function LoginForm() {
               type="checkbox"
               checked={field.value}
               onChange={(event) => field.onChange(event.target.checked)}
-              className="w-5 h-5 rounded border-none bg-surface-container-low text-primary accent-[#4edea3] focus:ring-primary/20"
+              className="h-5 w-5 rounded border-none bg-surface-container-low text-primary accent-[#4edea3] focus:ring-primary/20"
             />
             <label
               className="ml-3 text-sm text-on-surface-variant"
@@ -144,7 +146,7 @@ export function LoginForm() {
       <motion.button
         whileHover={{ scale: 1.02 }}
         whileTap={{ scale: 0.98 }}
-        className="w-full bg-primary text-on-primary font-bold py-4 rounded-full shadow-[0_8px_30px_rgb(78,222,163,0.2)] hover:shadow-[0_8px_40px_rgb(78,222,163,0.4)] transition-all flex items-center justify-center gap-2 group disabled:opacity-70"
+        className="group flex w-full items-center justify-center gap-2 rounded-full bg-primary py-4 font-bold text-on-primary shadow-[0_8px_30px_rgb(78,222,163,0.2)] transition-all hover:shadow-[0_8px_40px_rgb(78,222,163,0.4)] disabled:opacity-70"
         type="submit"
         disabled={loginMutation.isPending}
       >
@@ -157,7 +159,7 @@ export function LoginForm() {
           <>
             Log In
             <ArrowRight
-              className="group-hover:translate-x-1 transition-transform"
+              className="transition-transform group-hover:translate-x-1"
               size={20}
             />
           </>

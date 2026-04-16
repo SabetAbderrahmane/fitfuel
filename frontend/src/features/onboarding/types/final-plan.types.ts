@@ -1,0 +1,21 @@
+export type FinalGoalSummary = {
+  id: string;
+  user_id: string;
+  goal_type: "weight_loss" | "maintenance" | "muscle_gain" | "weight_gain";
+  notes: string | null;
+  calculation_mode: "calculated" | "manual";
+  bmr_formula: "mifflin_st_jeor" | "harris_benedict" | null;
+  estimated_bmr: number | null;
+  estimated_tdee: number | null;
+  target_weight_kg: number | null;
+  weekly_target_rate_kg: number | null;
+  target_calories: number;
+  target_protein_g: number;
+  target_carbs_g: number;
+  target_fat_g: number;
+  is_active: boolean;
+  started_at: string;
+  ended_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
