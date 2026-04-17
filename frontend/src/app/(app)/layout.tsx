@@ -1,3 +1,11 @@
-export default function GroupLayout({ children }: { children: React.ReactNode }) {
-  return children;
+import type { ReactNode } from "react";
+
+import { AppShell } from "@/components/layout/app-shell";
+
+export default function GroupLayout({
+  children,
+}: Readonly<{
+  children: ReactNode;
+}>) {
+  return <AppShell>{children}</AppShell>;
 }
