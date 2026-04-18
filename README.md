@@ -1,4 +1,4 @@
-# FitFuel AI
+# FitFuel AI(not finished yet tho it is still under work)
 
 **A personal project built out of pain, discipline, and a desire to create something meaningful.**
 
@@ -33,7 +33,7 @@ This project was built during one of the hardest periods of my life. It became m
 - ResNet50 for food image recognition
 - Cloudinary for image storage
 
-### Features
+### Features(not finished yet tho it is still under work)
 
 - Split-screen modern authentication (login & sign-up)
 - Onboarding flow with BMR/TDEE calculation
