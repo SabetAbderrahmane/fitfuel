@@ -73,6 +73,7 @@ class FoodLogService:
             user_id=current_user.id,
             logged_for_date=payload.logged_for_date,
             meal_type=payload.meal_type,
+            source_type="manual",
             notes=payload.notes.strip() if payload.notes else None,
             total_calories=0,
             total_protein_g=0,
@@ -101,8 +102,15 @@ class FoodLogService:
 
             log_item = FoodLogItem(
                 food_item_id=food_item.id,
-                food_name_snapshot=food_item.name,
+                photo_prediction_id=None,
+                food_name_snapshot=food_item.display_name or food_item.name,
                 brand_snapshot=food_item.brand,
+                serving_name=food_item.default_serving_label,
+                source_snapshot={
+                    "source_type": "manual",
+                    "food_item_source": food_item.source,
+                    "catalog_food_item_id": food_item.id,
+                },
                 quantity=round(item_payload.quantity, 2),
                 grams=grams,
                 calories=calories,
@@ -112,6 +120,7 @@ class FoodLogService:
             )
 
             food_log.items.append(log_item)
+            food_item.usage_count = int(food_item.usage_count or 0) + 1
 
             total_calories += calories
             total_protein += protein_g

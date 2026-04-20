@@ -15,14 +15,17 @@ from app.ai.vision.preprocessing import load_pil_image_from_bytes
 from app.ai.vision.vision_classifier import get_vision_classifier
 from app.core.config import settings
 from app.models.ai_feedback_history import AIFeedbackHistory
+from app.models.classifier_label import ClassifierLabel
+from app.models.classifier_label_food_map import ClassifierLabelFoodMap
+from app.models.food_alias import FoodAlias
 from app.models.food_item import FoodItem
 from app.models.food_log import FoodLog
 from app.models.food_log_item import FoodLogItem
 from app.models.photo_prediction import PhotoPrediction
+from app.models.photo_prediction_candidate import PhotoPredictionCandidate
 from app.models.photo_upload import PhotoUpload
 from app.models.user import User
 from app.schemas.photo import (
-    AIFeedbackHistoryResponse,
     PhotoPredictionConfirmRequest,
     PhotoPredictionCorrectionRequest,
     PhotoPredictionCreateRequest,
@@ -35,6 +38,11 @@ from app.schemas.photo import (
 class PhotoService:
     """
     Handles image ingestion, inference, prediction review, and conversion into logs.
+
+    Batch 3A behavior:
+    - resolve classifier labels through classifier_label_food_maps first
+    - store candidate rows for manual review
+    - require confirm/correct before final log-to-food-log conversion
     """
 
     def __init__(self, db: Session) -> None:
@@ -72,6 +80,20 @@ class PhotoService:
                 settings.cloudinary_api_secret.strip(),
             ]
         )
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        normalized = value.strip().lower()
+        normalized = normalized.replace("_", " ").replace("-", " ")
+        return " ".join(normalized.split())
+
+    @staticmethod
+    def _scale_nutrient(per_100g: float, grams: float) -> float:
+        return round((grams / 100.0) * per_100g, 2)
+
+    @staticmethod
+    def _prediction_is_reviewed(prediction: PhotoPrediction) -> bool:
+        return prediction.prediction_status in {"confirmed", "corrected"}
 
     def _configure_cloudinary(self) -> None:
         cloudinary.config(
@@ -305,10 +327,6 @@ class PhotoService:
 
         return prediction
 
-    @staticmethod
-    def _scale_nutrient(per_100g: float, grams: float) -> float:
-        return round((grams / 100.0) * per_100g, 2)
-
     def _calculate_prediction_nutrition(
         self,
         predicted_food_item_id: str | None,
@@ -335,11 +353,117 @@ class PhotoService:
             estimated_fat_g,
         )
 
+    def _find_classifier_label(self, normalized_label: str) -> ClassifierLabel | None:
+        statement = select(ClassifierLabel).where(
+            ClassifierLabel.normalized_label == normalized_label,
+            ClassifierLabel.is_active.is_(True),
+        )
+        return self.db.scalar(statement)
+
+    def _find_best_food_map_for_classifier_label(
+        self,
+        classifier_label: ClassifierLabel,
+    ) -> ClassifierLabelFoodMap | None:
+        statement = (
+            select(ClassifierLabelFoodMap)
+            .options(selectinload(ClassifierLabelFoodMap.food_item))
+            .where(ClassifierLabelFoodMap.classifier_label_id == classifier_label.id)
+            .order_by(
+                ClassifierLabelFoodMap.ranking.asc(),
+                desc(ClassifierLabelFoodMap.match_confidence),
+            )
+        )
+        return self.db.scalar(statement)
+
+    def _find_exact_food_alias(self, normalized_label: str) -> FoodAlias | None:
+        statement = (
+            select(FoodAlias)
+            .options(selectinload(FoodAlias.food_item))
+            .join(FoodItem, FoodItem.id == FoodAlias.food_item_id)
+            .where(
+                FoodAlias.normalized_alias == normalized_label,
+                FoodItem.is_active.is_(True),
+            )
+            .order_by(desc(FoodAlias.confidence_score))
+        )
+        return self.db.scalar(statement)
+
     def _match_food_item_by_label(
         self,
         label: str,
         score_threshold: float = 70.0,
-    ) -> tuple[FoodItem | None, float | None]:
+    ) -> tuple[
+        FoodItem | None,
+        float | None,
+        str | None,
+        ClassifierLabel | None,
+        bool,
+    ]:
+        normalized_label = self._normalize_text(label)
+        classifier_label = self._find_classifier_label(normalized_label)
+
+        if classifier_label is not None:
+            mapping = self._find_best_food_map_for_classifier_label(classifier_label)
+            if mapping is not None and mapping.food_item is not None and mapping.food_item.is_active:
+                requires_confirmation = (
+                    mapping.requires_user_confirmation
+                    or mapping.match_confidence < 0.95
+                )
+                return (
+                    mapping.food_item,
+                    round(mapping.match_confidence * 100.0, 2),
+                    "classifier_map",
+                    classifier_label,
+                    requires_confirmation,
+                )
+
+        alias = self._find_exact_food_alias(normalized_label)
+        if alias is not None and alias.food_item.is_active:
+            alias_score = alias.confidence_score
+            if alias_score <= 1.0:
+                alias_score *= 100.0
+            requires_confirmation = alias.alias_type not in {"exact", "source_name"}
+            return (
+                alias.food_item,
+                round(alias_score, 2),
+                "alias_exact",
+                classifier_label,
+                requires_confirmation,
+            )
+
+        alias_candidates = list(
+            self.db.scalars(
+                select(FoodAlias)
+                .options(selectinload(FoodAlias.food_item))
+                .join(FoodItem, FoodItem.id == FoodAlias.food_item_id)
+                .where(FoodItem.is_active.is_(True))
+                .order_by(FoodAlias.normalized_alias.asc())
+            ).all()
+        )
+
+        best_alias: FoodAlias | None = None
+        best_alias_score = 0.0
+
+        for alias_candidate in alias_candidates:
+            score = float(
+                fuzz.token_sort_ratio(
+                    normalized_label,
+                    self._normalize_text(alias_candidate.normalized_alias),
+                )
+            )
+            if score > best_alias_score:
+                best_alias_score = score
+                best_alias = alias_candidate
+
+        if best_alias is not None and best_alias_score >= score_threshold:
+            return (
+                best_alias.food_item,
+                round(best_alias_score, 2),
+                "fuzzy_alias",
+                classifier_label,
+                True,
+            )
+
         candidates = list(
             self.db.scalars(
                 select(FoodItem)
@@ -348,22 +472,91 @@ class PhotoService:
             ).all()
         )
 
-        if not candidates:
-            return None, None
-
         best_item: FoodItem | None = None
         best_score = 0.0
 
         for candidate in candidates:
-            score = float(fuzz.token_sort_ratio(label.lower(), candidate.name.lower()))
-            if score > best_score:
-                best_score = score
-                best_item = candidate
+            candidate_names = {
+                self._normalize_text(candidate.name),
+                self._normalize_text(candidate.display_name or candidate.name),
+                self._normalize_text(candidate.normalized_name or candidate.name),
+            }
+
+            for candidate_name in candidate_names:
+                if not candidate_name:
+                    continue
+                score = float(fuzz.token_sort_ratio(normalized_label, candidate_name))
+                if score > best_score:
+                    best_score = score
+                    best_item = candidate
 
         if best_item is None or best_score < score_threshold:
-            return None, None
+            return None, None, None, classifier_label, True
 
-        return best_item, round(best_score, 2)
+        return (
+            best_item,
+            round(best_score, 2),
+            "fuzzy_food_item",
+            classifier_label,
+            True,
+        )
+
+    def _build_prediction_candidate_rows(
+        self,
+        photo_prediction_id: str,
+        top_predictions: list,
+    ) -> list[PhotoPredictionCandidate]:
+        candidate_rows: list[PhotoPredictionCandidate] = []
+
+        for rank, candidate in enumerate(top_predictions, start=1):
+            (
+                matched_food_item,
+                match_score,
+                match_strategy,
+                classifier_label,
+                requires_confirmation,
+            ) = self._match_food_item_by_label(candidate.label)
+
+            mapping_confidence: float | None = None
+            if match_score is not None:
+                mapping_confidence = (
+                    round(match_score / 100.0, 4)
+                    if match_score > 1.0
+                    else round(match_score, 4)
+                )
+
+            combined_confidence = round(
+                (
+                    candidate.confidence_score
+                    + (
+                        mapping_confidence
+                        if mapping_confidence is not None
+                        else candidate.confidence_score
+                    )
+                )
+                / 2.0,
+                4,
+            )
+
+            candidate_rows.append(
+                PhotoPredictionCandidate(
+                    photo_prediction_id=photo_prediction_id,
+                    candidate_rank=rank,
+                    classifier_label_id=classifier_label.id if classifier_label else None,
+                    food_item_id=matched_food_item.id if matched_food_item else None,
+                    vision_confidence=round(candidate.confidence_score, 4),
+                    mapping_confidence=mapping_confidence,
+                    combined_confidence=combined_confidence,
+                    explanation_json={
+                        "predicted_label": candidate.label,
+                        "match_strategy": match_strategy or "unmapped",
+                        "match_score": match_score,
+                        "requires_user_confirmation": requires_confirmation,
+                    },
+                )
+            )
+
+        return candidate_rows
 
     def add_prediction_result(
         self,
@@ -381,9 +574,23 @@ class PhotoService:
         estimated_carbs_g = payload.estimated_carbs_g
         estimated_fat_g = payload.estimated_fat_g
 
-        if payload.predicted_food_item_id and payload.estimated_grams is not None:
+        resolved_food_item_id = payload.predicted_food_item_id
+        normalized_label = self._normalize_text(payload.predicted_label)
+
+        (
+            auto_matched_food_item,
+            auto_match_score,
+            auto_match_strategy,
+            classifier_label,
+            requires_confirmation,
+        ) = self._match_food_item_by_label(payload.predicted_label)
+
+        if resolved_food_item_id is None and auto_matched_food_item is not None:
+            resolved_food_item_id = auto_matched_food_item.id
+
+        if resolved_food_item_id and payload.estimated_grams is not None:
             calc = self._calculate_prediction_nutrition(
-                predicted_food_item_id=payload.predicted_food_item_id,
+                predicted_food_item_id=resolved_food_item_id,
                 estimated_grams=payload.estimated_grams,
             )
             estimated_calories = estimated_calories if estimated_calories is not None else calc[0]
@@ -391,11 +598,26 @@ class PhotoService:
             estimated_carbs_g = estimated_carbs_g if estimated_carbs_g is not None else calc[2]
             estimated_fat_g = estimated_fat_g if estimated_fat_g is not None else calc[3]
 
+        note_parts: list[str] = []
+        if payload.notes:
+            note_parts.append(payload.notes.strip())
+        if auto_match_strategy:
+            note_parts.append(
+                f"Auto-match strategy: {auto_match_strategy} "
+                f"(score={auto_match_score})."
+            )
+        if requires_confirmation:
+            note_parts.append("User confirmation is required before logging this prediction.")
+
+        if classifier_label is None:
+            classifier_label = self._find_classifier_label(normalized_label)
+
         prediction = PhotoPrediction(
             photo_upload_id=photo_upload.id,
-            predicted_food_item_id=payload.predicted_food_item_id,
+            predicted_food_item_id=resolved_food_item_id,
+            selected_classifier_label_id=classifier_label.id if classifier_label else None,
             model_name=payload.model_name.strip(),
-            prediction_status=payload.prediction_status.strip(),
+            prediction_status=payload.prediction_status,
             predicted_label=payload.predicted_label.strip(),
             confidence_score=payload.confidence_score,
             estimated_grams=payload.estimated_grams,
@@ -403,7 +625,7 @@ class PhotoService:
             estimated_protein_g=estimated_protein_g,
             estimated_carbs_g=estimated_carbs_g,
             estimated_fat_g=estimated_fat_g,
-            notes=payload.notes.strip() if payload.notes else None,
+            notes=" ".join(note_parts) if note_parts else None,
         )
 
         self.db.add(prediction)
@@ -433,15 +655,27 @@ class PhotoService:
             top_k=max(1, min(top_k, 10)),
         )
 
-        matched_food_item, match_score = self._match_food_item_by_label(
-            inference.predicted_label
-        )
+        (
+            matched_food_item,
+            match_score,
+            match_strategy,
+            classifier_label,
+            requires_confirmation,
+        ) = self._match_food_item_by_label(inference.predicted_label)
 
         saved_prediction_id: str | None = None
         if save_prediction:
+            note_parts = [
+                "Auto-generated by vision inference.",
+                f"Primary match strategy: {match_strategy or 'unmapped'}.",
+            ]
+            if requires_confirmation:
+                note_parts.append("User confirmation is required before logging this prediction.")
+
             prediction = PhotoPrediction(
                 photo_upload_id=photo_upload.id,
                 predicted_food_item_id=matched_food_item.id if matched_food_item else None,
+                selected_classifier_label_id=classifier_label.id if classifier_label else None,
                 model_name=inference.model_name,
                 prediction_status="completed",
                 predicted_label=inference.predicted_label,
@@ -451,18 +685,20 @@ class PhotoService:
                 estimated_protein_g=None,
                 estimated_carbs_g=None,
                 estimated_fat_g=None,
-                notes=(
-                    "Auto-generated by vision inference skeleton. "
-                    "Top predictions: "
-                    + ", ".join(
-                        f"{candidate.label} ({candidate.confidence_score:.4f})"
-                        for candidate in inference.top_predictions
-                    )
-                ),
+                notes=" ".join(note_parts),
             )
             self.db.add(prediction)
             self.db.commit()
             self.db.refresh(prediction)
+
+            candidate_rows = self._build_prediction_candidate_rows(
+                photo_prediction_id=prediction.id,
+                top_predictions=inference.top_predictions,
+            )
+            if candidate_rows:
+                self.db.add_all(candidate_rows)
+                self.db.commit()
+
             saved_prediction_id = prediction.id
 
         return VisionInferenceResponse(
@@ -471,7 +707,11 @@ class PhotoService:
             predicted_label=inference.predicted_label,
             confidence_score=inference.confidence_score,
             matched_food_item_id=matched_food_item.id if matched_food_item else None,
-            matched_food_name=matched_food_item.name if matched_food_item else None,
+            matched_food_name=(
+                matched_food_item.display_name or matched_food_item.name
+                if matched_food_item
+                else None
+            ),
             match_score=match_score,
             top_predictions=[
                 VisionTopPredictionResponse(
@@ -513,6 +753,12 @@ class PhotoService:
             photo_upload_id=photo_upload_id,
             prediction_id=prediction_id,
         )
+
+        if not prediction.predicted_food_item_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Prediction must be linked to a food item before it can be confirmed.",
+            )
 
         feedback = AIFeedbackHistory(
             user_id=current_user.id,
@@ -568,11 +814,30 @@ class PhotoService:
         original_estimated_grams = prediction.estimated_grams
         original_estimated_calories = prediction.estimated_calories
 
-        new_food_item_id = (
-            payload.predicted_food_item_id
-            if payload.predicted_food_item_id is not None
-            else prediction.predicted_food_item_id
-        )
+        new_label = prediction.predicted_label
+        if payload.predicted_label is not None:
+            new_label = payload.predicted_label.strip()
+
+        new_food_item_id = prediction.predicted_food_item_id
+        auto_matched_food_item: FoodItem | None = None
+        classifier_label: ClassifierLabel | None = None
+
+        if payload.predicted_food_item_id is not None:
+            new_food_item_id = payload.predicted_food_item_id
+            matched_food = self._get_food_item_with_nutrition(payload.predicted_food_item_id)
+            if payload.predicted_label is None:
+                new_label = matched_food.display_name or matched_food.name
+            classifier_label = self._find_classifier_label(self._normalize_text(new_label))
+        elif payload.predicted_label is not None:
+            (
+                auto_matched_food_item,
+                _auto_match_score,
+                _auto_match_strategy,
+                classifier_label,
+                _requires_confirmation,
+            ) = self._match_food_item_by_label(new_label)
+            if auto_matched_food_item is not None:
+                new_food_item_id = auto_matched_food_item.id
 
         new_estimated_grams = (
             payload.estimated_grams
@@ -580,13 +845,8 @@ class PhotoService:
             else prediction.estimated_grams
         )
 
-        new_label = prediction.predicted_label
-        if payload.predicted_label is not None:
-            new_label = payload.predicted_label.strip()
-
-        if payload.predicted_food_item_id is not None and payload.predicted_label is None:
-            matched_food = self._get_food_item_with_nutrition(payload.predicted_food_item_id)
-            new_label = matched_food.name
+        if classifier_label is None:
+            classifier_label = self._find_classifier_label(self._normalize_text(new_label))
 
         calc = self._calculate_prediction_nutrition(
             predicted_food_item_id=new_food_item_id,
@@ -595,6 +855,9 @@ class PhotoService:
 
         prediction.predicted_label = new_label
         prediction.predicted_food_item_id = new_food_item_id
+        prediction.selected_classifier_label_id = (
+            classifier_label.id if classifier_label else None
+        )
         prediction.estimated_grams = new_estimated_grams
         prediction.estimated_calories = calc[0]
         prediction.estimated_protein_g = calc[1]
@@ -640,6 +903,12 @@ class PhotoService:
             photo_upload_id=photo_upload_id,
             prediction_id=prediction_id,
         )
+
+        if not self._prediction_is_reviewed(prediction):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Prediction must be confirmed or corrected before logging to food log.",
+            )
 
         if not prediction.predicted_food_item_id:
             raise HTTPException(
@@ -687,6 +956,7 @@ class PhotoService:
             user_id=current_user.id,
             logged_for_date=payload.logged_for_date,
             meal_type=payload.meal_type,
+            source_type="photo",
             notes=payload.notes.strip() if payload.notes else f"Logged from photo upload {photo_upload_id}",
             total_calories=round(calories, 2),
             total_protein_g=round(protein_g, 2),
@@ -696,8 +966,18 @@ class PhotoService:
 
         log_item = FoodLogItem(
             food_item_id=food_item.id,
-            food_name_snapshot=food_item.name,
+            photo_prediction_id=prediction.id,
+            food_name_snapshot=food_item.display_name or food_item.name,
             brand_snapshot=food_item.brand,
+            serving_name=food_item.default_serving_label or "estimated portion",
+            source_snapshot={
+                "source_type": "photo",
+                "photo_upload_id": photo_upload_id,
+                "photo_prediction_id": prediction.id,
+                "prediction_status": prediction.prediction_status,
+                "predicted_label": prediction.predicted_label,
+                "catalog_food_item_id": food_item.id,
+            },
             quantity=1.0,
             grams=round(prediction.estimated_grams, 2),
             calories=round(calories, 2),
@@ -706,6 +986,7 @@ class PhotoService:
             fat_g=round(fat_g, 2),
         )
         food_log.items.append(log_item)
+        food_item.usage_count = int(food_item.usage_count or 0) + 1
 
         self.db.add(food_log)
         self.db.commit()

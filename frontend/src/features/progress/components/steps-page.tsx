@@ -23,7 +23,7 @@ function GlassCard({
 }>) {
   return (
     <div
-      className={`rounded-2xl border border-white/5 bg-[#141b2b]/85 p-8 shadow-[0_20px_50px_rgba(0,0,0,0.28)] backdrop-blur-xl ${className}`}
+      className={`rounded-2xl border border-white/5 bg-surface-container-low/85 p-8 shadow-[0_20px_50px_rgba(0,0,0,0.28)] backdrop-blur-xl ${className}`}
     >
       {children}
     </div>
@@ -69,7 +69,7 @@ export function StepsPage() {
             ].map((item) => (
               <div
                 key={item.label}
-                className="rounded-2xl border border-white/5 bg-white/[0.03] p-4"
+                className="rounded-2xl border border-white/5 bg-white/3 p-4"
               >
                 <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">
                   {item.label}
@@ -108,7 +108,7 @@ export function StepsPage() {
             ].map((item) => (
               <div
                 key={item.label}
-                className="flex items-center justify-between rounded-2xl border border-white/5 bg-white/[0.03] px-5 py-4"
+                className="flex items-center justify-between rounded-2xl border border-white/5 bg-white/3 px-5 py-4"
               >
                 <div className="flex items-center gap-3 text-slate-400">
                   {item.icon}
@@ -166,7 +166,7 @@ export function StepsPage() {
             {stepSessions.map((session) => (
               <div
                 key={session.label}
-                className="rounded-2xl border border-white/5 bg-white/[0.03] px-5 py-4"
+                className="rounded-2xl border border-white/5 bg-white/3 px-5 py-4"
               >
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-bold text-white">{session.label}</div>
@@ -184,4 +184,4 @@ export function StepsPage() {
       </div>
     </motion.div>
   );
-}
+} 67

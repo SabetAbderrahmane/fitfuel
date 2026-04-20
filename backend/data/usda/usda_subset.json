@@ -1,0 +1,38 @@
+[
+  {
+    "fdcId": 1001,
+    "description": "Banana, raw",
+    "foodNutrients": [
+      { "nutrientNumber": "208", "nutrientName": "Energy", "amount": 89, "unitName": "KCAL" },
+      { "nutrientNumber": "203", "nutrientName": "Protein", "amount": 1.09, "unitName": "G" },
+      { "nutrientNumber": "205", "nutrientName": "Carbohydrate, by difference", "amount": 22.84, "unitName": "G" },
+      { "nutrientNumber": "204", "nutrientName": "Total lipid (fat)", "amount": 0.33, "unitName": "G" },
+      { "nutrientNumber": "291", "nutrientName": "Fiber, total dietary", "amount": 2.6, "unitName": "G" },
+      { "nutrientNumber": "269", "nutrientName": "Sugars, total including NLEA", "amount": 12.23, "unitName": "G" },
+      { "nutrientNumber": "307", "nutrientName": "Sodium, Na", "amount": 1, "unitName": "MG" }
+    ]
+  },
+  {
+    "fdcId": 1002,
+    "description": "Chicken breast, roasted",
+    "foodNutrients": [
+      { "nutrientNumber": "208", "nutrientName": "Energy", "amount": 165, "unitName": "KCAL" },
+      { "nutrientNumber": "203", "nutrientName": "Protein", "amount": 31.0, "unitName": "G" },
+      { "nutrientNumber": "205", "nutrientName": "Carbohydrate, by difference", "amount": 0.0, "unitName": "G" },
+      { "nutrientNumber": "204", "nutrientName": "Total lipid (fat)", "amount": 3.6, "unitName": "G" },
+      { "nutrientNumber": "307", "nutrientName": "Sodium, Na", "amount": 74, "unitName": "MG" }
+    ]
+  },
+  {
+    "fdcId": 1003,
+    "description": "White rice, cooked",
+    "foodNutrients": [
+      { "nutrientNumber": "208", "nutrientName": "Energy", "amount": 130, "unitName": "KCAL" },
+      { "nutrientNumber": "203", "nutrientName": "Protein", "amount": 2.69, "unitName": "G" },
+      { "nutrientNumber": "205", "nutrientName": "Carbohydrate, by difference", "amount": 28.17, "unitName": "G" },
+      { "nutrientNumber": "204", "nutrientName": "Total lipid (fat)", "amount": 0.28, "unitName": "G" },
+      { "nutrientNumber": "291", "nutrientName": "Fiber, total dietary", "amount": 0.4, "unitName": "G" },
+      { "nutrientNumber": "307", "nutrientName": "Sodium, Na", "amount": 1, "unitName": "MG" }
+    ]
+  }
+]

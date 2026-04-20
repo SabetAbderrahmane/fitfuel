@@ -17,10 +17,6 @@ if TYPE_CHECKING:
 class FoodLog(Base, TimestampMixin):
     """
     A single meal log for a user on a specific date.
-
-    Example:
-    - breakfast on 2026-04-02
-    - lunch on 2026-04-02
     """
 
     __tablename__ = "food_logs"
@@ -45,6 +41,11 @@ class FoodLog(Base, TimestampMixin):
     meal_type: Mapped[str] = mapped_column(
         String(30),
         index=True,
+        nullable=False,
+    )
+    source_type: Mapped[str] = mapped_column(
+        String(30),
+        default="manual",
         nullable=False,
     )
     notes: Mapped[str | None] = mapped_column(
@@ -73,8 +74,8 @@ class FoodLog(Base, TimestampMixin):
         nullable=False,
     )
 
-    user: Mapped[User] = relationship("User")
-    items: Mapped[list[FoodLogItem]] = relationship(
+    user: Mapped["User"] = relationship("User")
+    items: Mapped[list["FoodLogItem"]] = relationship(
         "FoodLogItem",
         back_populates="food_log",
         cascade="all, delete-orphan",

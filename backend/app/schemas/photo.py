@@ -5,6 +5,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 PhotoLogMealType = Literal["breakfast", "lunch", "dinner", "snack"]
+PredictionStatus = Literal[
+    "pending",
+    "completed",
+    "failed",
+    "confirmed",
+    "corrected",
+    "rejected",
+]
 
 
 class PhotoPredictionCreateRequest(BaseModel):
@@ -12,7 +20,7 @@ class PhotoPredictionCreateRequest(BaseModel):
     predicted_food_item_id: str | None = None
 
     model_name: str = Field(default="manual_placeholder", max_length=100)
-    prediction_status: str = Field(default="completed", max_length=30)
+    prediction_status: PredictionStatus = "completed"
     confidence_score: float | None = Field(default=None, ge=0, le=1)
 
     estimated_grams: float | None = Field(default=None, ge=0, le=10000)
@@ -49,7 +57,7 @@ class PhotoPredictionResponse(BaseModel):
     predicted_food_item_id: str | None
 
     model_name: str
-    prediction_status: str
+    prediction_status: PredictionStatus
     predicted_label: str
     confidence_score: float | None
 

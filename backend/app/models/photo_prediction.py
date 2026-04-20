@@ -3,14 +3,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import Float, ForeignKey, String, Text
+from sqlalchemy import CheckConstraint, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.ai_feedback_history import AIFeedbackHistory
+    from app.models.classifier_label import ClassifierLabel
     from app.models.food_item import FoodItem
+    from app.models.photo_prediction_candidate import PhotoPredictionCandidate
     from app.models.photo_upload import PhotoUpload
 
 
@@ -20,6 +22,13 @@ class PhotoPrediction(Base, TimestampMixin):
     """
 
     __tablename__ = "photo_predictions"
+    __table_args__ = (
+        CheckConstraint(
+            "prediction_status IN "
+            "('pending', 'completed', 'failed', 'confirmed', 'corrected', 'rejected')",
+            name="prediction_status_valid",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(36),
@@ -35,6 +44,12 @@ class PhotoPrediction(Base, TimestampMixin):
     predicted_food_item_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("food_items.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    selected_classifier_label_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("classifier_labels.id", ondelete="SET NULL"),
         index=True,
         nullable=True,
     )
@@ -84,12 +99,22 @@ class PhotoPrediction(Base, TimestampMixin):
         nullable=True,
     )
 
-    photo_upload: Mapped[PhotoUpload] = relationship(
+    photo_upload: Mapped["PhotoUpload"] = relationship(
         "PhotoUpload",
         back_populates="predictions",
     )
-    predicted_food_item: Mapped[FoodItem | None] = relationship("FoodItem")
-    feedback_entries: Mapped[list[AIFeedbackHistory]] = relationship(
+    predicted_food_item: Mapped["FoodItem | None"] = relationship("FoodItem")
+    selected_classifier_label: Mapped["ClassifierLabel | None"] = relationship(
+        "ClassifierLabel",
+        back_populates="selected_predictions",
+    )
+    candidates: Mapped[list["PhotoPredictionCandidate"]] = relationship(
+        "PhotoPredictionCandidate",
+        back_populates="photo_prediction",
+        cascade="all, delete-orphan",
+        order_by="PhotoPredictionCandidate.candidate_rank.asc()",
+    )
+    feedback_entries: Mapped[list["AIFeedbackHistory"]] = relationship(
         "AIFeedbackHistory",
         back_populates="photo_prediction",
         cascade="all, delete-orphan",
