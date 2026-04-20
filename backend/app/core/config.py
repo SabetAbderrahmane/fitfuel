@@ -4,14 +4,12 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
     """
     Central application settings.
-
     Reads values from backend/.env and provides strongly typed access
     across the application.
     """
@@ -68,12 +66,20 @@ class Settings(BaseSettings):
     vision_model_path: str = Field(default="", alias="VISION_MODEL_PATH")
     vision_class_names_path: str = Field(default="", alias="VISION_CLASS_NAMES_PATH")
 
+    # Gemini chat assistant
+    gemini_enabled: bool = Field(default=False, alias="GEMINI_ENABLED")
+    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
+    gemini_temperature: float = Field(default=0.2, alias="GEMINI_TEMPERATURE")
+    gemini_max_output_tokens: int = Field(default=1024, alias="GEMINI_MAX_OUTPUT_TOKENS")
+
     @property
     def cors_origins_list(self) -> list[str]:
-        """
-        Convert comma-separated CORS origins into a clean list.
-        """
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def gemini_is_configured(self) -> bool:
+        return self.gemini_enabled and bool(self.gemini_api_key.strip())
 
 
 @lru_cache

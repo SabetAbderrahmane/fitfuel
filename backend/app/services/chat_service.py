@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass
 
 from rapidfuzz import fuzz
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.ai.chat import GeminiMealAssistant
 from app.models.chat_message import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.food_item import FoodItem
@@ -28,7 +29,6 @@ PLACEHOLDER_FOOD_NAMES = {
     "unknown",
 }
 
-
 SWAP_HINTS_BY_CATEGORY = {
     "carb": "Add more carb alternatives such as potatoes, oats, quinoa, pasta, or sweet potatoes.",
     "protein": "Add more protein alternatives such as tuna, tofu, yogurt, lean beef, or cottage cheese.",
@@ -37,20 +37,14 @@ SWAP_HINTS_BY_CATEGORY = {
 }
 
 
-@dataclass(slots=True)
-class FoodMatch:
-    item: FoodItem
-    score: float
-
-
 class ChatService:
     """
-    Deterministic meal assistant service.
+    Hybrid FitFuel assistant.
 
-    Improvements in this version:
-    - exact food mention extraction before fuzzy matching
-    - filtered food pool so placeholder/broken food rows do not pollute chat answers
-    - more helpful swap suggestions when the catalog lacks a direct same-category alternative
+    Strategy:
+    - Gemini handles conversation quality, chit-chat, and general education
+    - deterministic FitFuel services remain the source of truth for user-specific numbers and app facts
+    - metadata_json always records provider / model / fallback / intent / response_mode
     """
 
     def __init__(self, db: Session) -> None:
@@ -58,9 +52,61 @@ class ChatService:
         self.chat_repository = ChatRepository(db)
         self.goal_repository = GoalRepository(db)
         self.meal_plan_repository = MealPlanRepository(db)
+        self.gemini_assistant = GeminiMealAssistant()
 
     # -------------------------------------------------------------------------
-    # General helpers
+    # Session CRUD
+    # -------------------------------------------------------------------------
+
+    def create_session(
+        self,
+        current_user: User,
+        payload: ChatSessionCreateRequest,
+    ) -> ChatSession:
+        title = payload.title.strip() if payload.title else "New chat"
+
+        session = ChatSession(
+            user_id=current_user.id,
+            title=title,
+            status="active",
+            summary=None,
+        )
+
+        self.db.add(session)
+        self.db.commit()
+        self.db.refresh(session)
+
+        return session
+
+    def list_sessions(
+        self,
+        current_user: User,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[ChatSession]:
+        return self.chat_repository.list_sessions_for_user(
+            current_user.id,
+            limit=limit,
+            offset=offset,
+        )
+
+    def get_session(
+        self,
+        current_user: User,
+        chat_session_id: str,
+    ) -> ChatSession:
+        session = self.chat_repository.get_session_for_user(
+            current_user.id,
+            chat_session_id,
+        )
+
+        if session is None:
+            raise ValueError("Chat session not found.")
+
+        return session
+
+    # -------------------------------------------------------------------------
+    # Catalog helpers
     # -------------------------------------------------------------------------
 
     @staticmethod
@@ -112,59 +158,27 @@ class ChatService:
         )
         return [item for item in items if self._is_reasonable_food_item(item)]
 
-    # -------------------------------------------------------------------------
-    # Chat session CRUD
-    # -------------------------------------------------------------------------
+    def _catalog_snapshot(self, limit: int = 12) -> str:
+        foods = self._list_active_food_items()[:limit]
+        if not foods:
+            return "No usable food items exist in the catalog."
 
-    def create_session(
-        self,
-        current_user: User,
-        payload: ChatSessionCreateRequest,
-    ) -> ChatSession:
-        title = payload.title.strip() if payload.title else "New chat"
-
-        session = ChatSession(
-            user_id=current_user.id,
-            title=title,
-            status="active",
-            summary=None,
-        )
-
-        self.db.add(session)
-        self.db.commit()
-        self.db.refresh(session)
-
-        return session
-
-    def list_sessions(
-        self,
-        current_user: User,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> list[ChatSession]:
-        return self.chat_repository.list_sessions_for_user(
-            current_user.id,
-            limit=limit,
-            offset=offset,
-        )
-
-    def get_session(
-        self,
-        current_user: User,
-        chat_session_id: str,
-    ) -> ChatSession:
-        session = self.chat_repository.get_session_for_user(
-            current_user.id,
-            chat_session_id,
-        )
-
-        if session is None:
-            raise ValueError("Chat session not found.")
-
-        return session
+        lines: list[str] = []
+        for item in foods:
+            nutrition = item.nutrition_fact
+            if nutrition is None:
+                continue
+            lines.append(
+                f"- {item.name} | category={item.category or 'unknown'} | "
+                f"{nutrition.calories_per_100g} kcal | "
+                f"P {nutrition.protein_g_per_100g} | "
+                f"C {nutrition.carbs_g_per_100g} | "
+                f"F {nutrition.fat_g_per_100g} per 100 g"
+            )
+        return "\n".join(lines)
 
     # -------------------------------------------------------------------------
-    # Goal / meal summaries
+    # Grounded summaries
     # -------------------------------------------------------------------------
 
     def _get_active_goal_summary(self, current_user: User) -> str:
@@ -207,10 +221,6 @@ class ChatService:
             )
 
         return "\n".join(lines)
-
-    # -------------------------------------------------------------------------
-    # Food suggestions
-    # -------------------------------------------------------------------------
 
     def _list_top_protein_foods(self, limit: int = 5) -> list[FoodItem]:
         items = self._list_active_food_items()
@@ -292,10 +302,8 @@ class ChatService:
         lowered = content.strip().lower()
 
         patterns = [
-            r"(?:swap|replace)\s+for\s+(?P<food>.+?)(?:[?.!]|$)",
             r"(?:swap|replace)\s+(?P<food>.+?)\s+(?:with|instead of|for)(?:\s+.+)?$",
             r"alternative\s+to\s+(?P<food>.+?)(?:[?.!]|$)",
-            r"for\s+(?P<food>.+?)(?:[?.!]|$)",
         ]
 
         for pattern in patterns:
@@ -320,7 +328,6 @@ class ChatService:
         if extracted_food_phrase and extracted_food_phrase not in query_variants:
             query_variants.append(extracted_food_phrase)
 
-        # Pass 1: exact or substring mention, preferring longer food names.
         items_by_name_length = sorted(
             items,
             key=lambda item: len(self._normalize_text(item.name)),
@@ -333,26 +340,25 @@ class ChatService:
                 if normalized_item_name and normalized_item_name in variant:
                     return item
 
-        # Pass 2: fuzzy match against the best extracted phrase.
-        best_match: FoodMatch | None = None
+        best_item: FoodItem | None = None
+        best_score = 0.0
 
         for item in items:
             normalized_item_name = self._normalize_text(item.name)
-
             for variant in query_variants:
                 score = max(
                     float(fuzz.token_set_ratio(variant, normalized_item_name)),
                     float(fuzz.partial_ratio(variant, normalized_item_name)),
                     float(fuzz.ratio(variant, normalized_item_name)),
                 )
+                if score > best_score:
+                    best_score = score
+                    best_item = item
 
-                if best_match is None or score > best_match.score:
-                    best_match = FoodMatch(item=item, score=score)
-
-        if best_match is None or best_match.score < 45.0:
+        if best_item is None or best_score < 45.0:
             return None
 
-        return best_match.item
+        return best_item
 
     @staticmethod
     def _swap_candidate_score(reference: FoodItem, candidate: FoodItem) -> float:
@@ -416,7 +422,8 @@ class ChatService:
         lines = [f"Possible swaps for **{referenced_food.name}**:"]
         for item in ranked:
             nutrition = item.nutrition_fact
-            assert nutrition is not None
+            if nutrition is None:
+                continue
             lines.append(
                 f"- **{item.name}**: {nutrition.calories_per_100g} kcal / 100 g, "
                 f"{nutrition.protein_g_per_100g} g protein / 100 g, "
@@ -427,12 +434,61 @@ class ChatService:
         return "\n".join(lines)
 
     # -------------------------------------------------------------------------
-    # Intent routing
+    # Intent detection
     # -------------------------------------------------------------------------
 
     @staticmethod
-    def _detect_intent(content: str) -> str:
+    def _is_greeting(content: str) -> bool:
+        normalized = content.strip().lower()
+        return normalized in {"hi", "hello", "hey", "good morning", "good evening", "yo"}
+
+    @staticmethod
+    def _is_farewell(content: str) -> bool:
+        normalized = content.strip().lower()
+        return normalized in {"bye", "goodbye", "see you", "see ya", "later", "talk later"}
+
+    @staticmethod
+    def _is_gratitude(content: str) -> bool:
+        normalized = content.strip().lower()
+        return normalized in {"thanks", "thank you", "thx", "ty", "ok thanks", "okay thanks"}
+
+    @staticmethod
+    def _is_general_nutrition_question(content: str) -> bool:
         lowered = content.lower()
+        nutrition_patterns = [
+            "best time to eat",
+            "when should i eat",
+            "when is the best time",
+            "how much protein",
+            "how often should i eat",
+            "is it okay to",
+            "should i eat before workout",
+            "should i eat after workout",
+            "pre workout meal",
+            "post workout meal",
+            "protein timing",
+            "meal timing",
+            "how many meals",
+            "is protein before bed good",
+            "should i spread protein",
+            "what is the best way to eat protein",
+        ]
+        return any(pattern in lowered for pattern in nutrition_patterns)
+
+    def _detect_intent(self, content: str) -> str:
+        lowered = content.lower()
+
+        if self._is_greeting(lowered):
+            return "greeting"
+
+        if self._is_farewell(lowered):
+            return "farewell"
+
+        if self._is_gratitude(lowered):
+            return "gratitude"
+
+        if self._is_general_nutrition_question(lowered):
+            return "nutrition_education"
 
         if any(keyword in lowered for keyword in ["swap", "replace", "instead of", "alternative"]):
             return "meal_swap"
@@ -451,39 +507,168 @@ class ChatService:
 
         return "general_help"
 
-    def _generate_assistant_response(
+    # -------------------------------------------------------------------------
+    # Response mode
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _response_mode_for_intent(intent: str) -> str:
+        if intent in {"greeting", "farewell", "gratitude", "general_help"}:
+            return "SMALLTALK"
+
+        if intent == "nutrition_education":
+            return "EDUCATION"
+
+        return "GROUNDED"
+
+    # -------------------------------------------------------------------------
+    # Fallback responses
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _smalltalk_fallback(intent: str) -> str:
+        if intent == "greeting":
+            return "Hey — I’m here. Ask me about meals, goals, swaps, logging, or your meal plan."
+        if intent == "farewell":
+            return "Got it. Come back whenever you want help with meals, progress, or logging."
+        if intent == "gratitude":
+            return "You’re welcome."
+        return (
+            "I can help with meal swaps, protein suggestions, recipe ideas, "
+            "goal summaries, meal-plan explanations, and general nutrition questions."
+        )
+
+    @staticmethod
+    def _nutrition_education_fallback() -> str:
+        return (
+            "I can answer general nutrition questions when Gemini is available. "
+            "For now, try enabling Gemini or ask something directly tied to your FitFuel data."
+        )
+
+    def _build_deterministic_fallback(
         self,
         current_user: User,
         content: str,
-    ) -> tuple[str, str]:
-        intent = self._detect_intent(content)
+        intent: str,
+    ) -> str:
+        if intent in {"greeting", "farewell", "gratitude", "general_help"}:
+            return self._smalltalk_fallback(intent)
+
+        if intent == "nutrition_education":
+            return self._nutrition_education_fallback()
 
         if intent == "goal_summary":
-            return intent, self._get_active_goal_summary(current_user)
+            return self._get_active_goal_summary(current_user)
 
         if intent == "protein_suggestion":
-            return intent, self._build_high_protein_suggestion()
+            return self._build_high_protein_suggestion()
 
         if intent == "recipe_suggestion":
-            return intent, self._build_recipe_suggestion(content)
+            return self._build_recipe_suggestion(content)
 
         if intent == "meal_plan_summary":
-            return intent, self._build_meal_plan_summary(current_user)
+            return self._build_meal_plan_summary(current_user)
 
         if intent == "meal_swap":
-            return intent, self._build_swap_suggestion(content)
+            return self._build_swap_suggestion(content)
 
-        return (
-            intent,
-            (
-                "I can currently help with these meal-assistant tasks:\n"
-                "- summarize your calorie and macro goal\n"
-                "- suggest high-protein foods\n"
-                "- suggest recipes from your recipe catalog\n"
-                "- suggest simple food swaps\n"
-                "- summarize your latest meal plan"
-            ),
+        return self._smalltalk_fallback("general_help")
+
+    # -------------------------------------------------------------------------
+    # Gemini orchestration
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _build_conversation_history(session: ChatSession, limit: int = 8) -> str:
+        history = session.messages[-limit:] if session.messages else []
+        if not history:
+            return ""
+
+        return "\n".join(f"{message.role}: {message.content}" for message in history)
+
+    def _build_grounded_context(
+        self,
+        current_user: User,
+        content: str,
+        intent: str,
+        fallback_response: str,
+    ) -> str:
+        if intent in {"greeting", "farewell", "gratitude", "general_help", "nutrition_education"}:
+            return ""
+
+        sections: list[str] = []
+
+        if intent in {"goal_summary", "meal_swap", "protein_suggestion", "meal_plan_summary"}:
+            sections.append("Active goal summary:")
+            sections.append(self._get_active_goal_summary(current_user))
+
+        if intent == "protein_suggestion":
+            sections.append("Protein-oriented catalog snapshot:")
+            sections.append(self._build_high_protein_suggestion())
+
+        if intent == "recipe_suggestion":
+            sections.append("Recipe retrieval result:")
+            sections.append(self._build_recipe_suggestion(content))
+
+        if intent == "meal_plan_summary":
+            sections.append("Latest meal plan summary:")
+            sections.append(self._build_meal_plan_summary(current_user))
+
+        if intent == "meal_swap":
+            sections.append("Swap analysis:")
+            sections.append(self._build_swap_suggestion(content))
+            sections.append("Food catalog snapshot:")
+            sections.append(self._catalog_snapshot(limit=12))
+
+        sections.append("Deterministic fallback answer:")
+        sections.append(fallback_response)
+
+        return "\n\n".join(sections)
+
+    def _generate_assistant_response(
+        self,
+        current_user: User,
+        session: ChatSession,
+        content: str,
+    ) -> tuple[str, str, str | None]:
+        intent = self._detect_intent(content)
+        response_mode = self._response_mode_for_intent(intent)
+
+        fallback_response = self._build_deterministic_fallback(
+            current_user=current_user,
+            content=content,
+            intent=intent,
         )
+
+        grounded_context = self._build_grounded_context(
+            current_user=current_user,
+            content=content,
+            intent=intent,
+            fallback_response=fallback_response,
+        )
+        conversation_history = self._build_conversation_history(session)
+
+        llm_result = self.gemini_assistant.generate_reply(
+            user_message=content,
+            detected_intent=intent,
+            response_mode=response_mode,
+            conversation_history=conversation_history,
+            grounded_context=grounded_context,
+            deterministic_fallback=fallback_response,
+        )
+
+        metadata_json = json.dumps(
+            {
+                "provider": llm_result.provider,
+                "model": llm_result.model,
+                "used_fallback": llm_result.used_fallback,
+                "intent": intent,
+                "response_mode": response_mode,
+                "error": llm_result.error,
+            }
+        )
+
+        return intent, llm_result.text, metadata_json
 
     # -------------------------------------------------------------------------
     # Public chat flow
@@ -508,8 +693,9 @@ class ChatService:
         self.db.add(user_message)
         self.db.flush()
 
-        intent, assistant_content = self._generate_assistant_response(
+        intent, assistant_content, metadata_json = self._generate_assistant_response(
             current_user=current_user,
+            session=session,
             content=user_content,
         )
 
@@ -518,7 +704,7 @@ class ChatService:
             role="assistant",
             content=assistant_content,
             detected_intent=intent,
-            metadata_json=None,
+            metadata_json=metadata_json,
         )
         self.db.add(assistant_message)
 
