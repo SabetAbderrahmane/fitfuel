@@ -718,4 +718,4 @@ class ChatService:
         self.db.refresh(user_message)
         self.db.refresh(assistant_message)
 
-        return user_message, assistant_message
+        return user_message, assistant_message 
