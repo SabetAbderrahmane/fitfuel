@@ -26,7 +26,7 @@ async def create_meal_plan(
     db: Session = Depends(get_db),
 ) -> MealPlanResponse:
     service = MealPlanService(db)
-    plan = service.create_manual_plan(current_user=current_user, payload=payload)
+    plan = service.create_meal_plan(current_user=current_user, payload=payload)
     return MealPlanResponse.model_validate(plan)
 
 
@@ -42,7 +42,7 @@ async def generate_meal_plan(
     db: Session = Depends(get_db),
 ) -> MealPlanResponse:
     service = MealPlanService(db)
-    plan = service.generate_simple_plan(current_user=current_user, payload=payload)
+    plan = service.generate_meal_plan(current_user=current_user, payload=payload)
     return MealPlanResponse.model_validate(plan)
 
 
