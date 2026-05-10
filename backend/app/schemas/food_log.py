@@ -60,3 +60,12 @@ class FoodLogResponse(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+
+
+class FoodLogDailySummaryResponse(BaseModel):
+    date: date
+    total_calories: float
+    total_protein_g: float
+    total_carbs_g: float
+    total_fat_g: float
+    log_count: int

@@ -12,7 +12,6 @@ from sqlalchemy import Select, desc, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.ai.vision.preprocessing import load_pil_image_from_bytes
-from app.ai.vision.vision_classifier import get_vision_classifier
 from app.core.config import settings
 from app.models.ai_feedback_history import AIFeedbackHistory
 from app.models.classifier_label import ClassifierLabel
@@ -30,8 +29,18 @@ from app.schemas.photo import (
     PhotoPredictionCorrectionRequest,
     PhotoPredictionCreateRequest,
     PhotoPredictionToFoodLogRequest,
+    VisionBinaryPredictionResponse,
+    VisionFoodPredictionResponse,
     VisionInferenceResponse,
+    VisionNutritionEstimateResponse,
+    VisionProbabilityResponse,
     VisionTopPredictionResponse,
+)
+from app.services.vision_inference_service import (
+    FoodVisionResult,
+    VisionModelUnavailableError,
+    VisionPrediction,
+    get_vision_inference_service,
 )
 
 
@@ -353,12 +362,35 @@ class PhotoService:
             estimated_fat_g,
         )
 
+    def _build_nutrition_estimate_response(
+        self,
+        food_item: FoodItem | None,
+        serving_grams: float,
+    ) -> VisionNutritionEstimateResponse | None:
+        if food_item is None or food_item.nutrition_fact is None:
+            return None
+
+        nutrition = food_item.nutrition_fact
+        return VisionNutritionEstimateResponse(
+            food_item_id=food_item.id,
+            food_name=food_item.display_name or food_item.name,
+            serving_grams=serving_grams,
+            estimated_calories=self._scale_nutrient(nutrition.calories_per_100g, serving_grams),
+            estimated_protein_g=self._scale_nutrient(nutrition.protein_g_per_100g, serving_grams),
+            estimated_carbs_g=self._scale_nutrient(nutrition.carbs_g_per_100g, serving_grams),
+            estimated_fat_g=self._scale_nutrient(nutrition.fat_g_per_100g, serving_grams),
+        )
+
     def _find_classifier_label(self, normalized_label: str) -> ClassifierLabel | None:
         statement = select(ClassifierLabel).where(
             ClassifierLabel.normalized_label == normalized_label,
             ClassifierLabel.is_active.is_(True),
         )
-        return self.db.scalar(statement)
+        labels = list(self.db.scalars(statement).all())
+        for label in labels:
+            if label.label_set_name == "food101_subset_resnet50":
+                return label
+        return labels[0] if labels else None
 
     def _find_best_food_map_for_classifier_label(
         self,
@@ -558,6 +590,55 @@ class PhotoService:
 
         return candidate_rows
 
+    def _build_cv_prediction_candidate_rows(
+        self,
+        photo_prediction_id: str,
+        top_predictions: list[VisionPrediction],
+    ) -> list[PhotoPredictionCandidate]:
+        candidate_rows: list[PhotoPredictionCandidate] = []
+
+        for rank, candidate in enumerate(top_predictions, start=1):
+            (
+                matched_food_item,
+                match_score,
+                match_strategy,
+                classifier_label,
+                requires_confirmation,
+            ) = self._match_food_item_by_label(candidate.label)
+
+            mapping_confidence = None
+            if match_score is not None:
+                mapping_confidence = round(match_score / 100.0, 4) if match_score > 1.0 else round(match_score, 4)
+
+            combined_confidence = round(
+                (
+                    candidate.probability
+                    + (mapping_confidence if mapping_confidence is not None else candidate.probability)
+                )
+                / 2.0,
+                4,
+            )
+
+            candidate_rows.append(
+                PhotoPredictionCandidate(
+                    photo_prediction_id=photo_prediction_id,
+                    candidate_rank=rank,
+                    classifier_label_id=classifier_label.id if classifier_label else None,
+                    food_item_id=matched_food_item.id if matched_food_item else None,
+                    vision_confidence=round(candidate.probability, 4),
+                    mapping_confidence=mapping_confidence,
+                    combined_confidence=combined_confidence,
+                    explanation_json={
+                        "predicted_label": candidate.label,
+                        "match_strategy": match_strategy or "unmapped",
+                        "match_score": match_score,
+                        "requires_user_confirmation": requires_confirmation,
+                    },
+                )
+            )
+
+        return candidate_rows
+
     def add_prediction_result(
         self,
         current_user: User,
@@ -640,6 +721,7 @@ class PhotoService:
         photo_upload_id: str,
         top_k: int = 3,
         save_prediction: bool = True,
+        serving_grams: float | None = None,
     ) -> VisionInferenceResponse:
         photo_upload = self.get_photo_upload(
             current_user=current_user,
@@ -649,63 +731,164 @@ class PhotoService:
         image_bytes = self._get_photo_bytes(photo_upload)
         pil_image = load_pil_image_from_bytes(image_bytes)
 
-        classifier = get_vision_classifier()
-        inference = classifier.infer_pil_image(
-            image=pil_image,
-            top_k=max(1, min(top_k, 10)),
-        )
+        try:
+            inference = get_vision_inference_service().analyze(
+                image=pil_image,
+                top_k=max(1, min(top_k, 10)),
+            )
+        except VisionModelUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
 
-        (
-            matched_food_item,
-            match_score,
-            match_strategy,
-            classifier_label,
-            requires_confirmation,
-        ) = self._match_food_item_by_label(inference.predicted_label)
+        binary = inference.binary_prediction
+        food_prediction: FoodVisionResult | None = inference.food_prediction
+
+        matched_food_item: FoodItem | None = None
+        match_score: float | None = None
+        match_strategy: str | None = None
+        classifier_label: ClassifierLabel | None = None
+        requires_confirmation = True
+        nutrition_estimate: VisionNutritionEstimateResponse | None = None
+        mapping_status = "needs_confirmation"
+
+        if food_prediction is not None:
+            (
+                matched_food_item,
+                match_score,
+                match_strategy,
+                classifier_label,
+                requires_confirmation,
+            ) = self._match_food_item_by_label(food_prediction.predicted_label)
+
+            effective_serving_grams = serving_grams or settings.vision_default_serving_grams
+            nutrition_estimate = self._build_nutrition_estimate_response(
+                food_item=matched_food_item,
+                serving_grams=effective_serving_grams,
+            )
+
+            if matched_food_item is None:
+                mapping_status = "unmapped"
+            elif food_prediction.user_confirmation_required or requires_confirmation:
+                mapping_status = "needs_confirmation"
+            else:
+                mapping_status = "mapped"
+        elif binary.status == "rejected":
+            mapping_status = "unmapped"
 
         saved_prediction_id: str | None = None
         if save_prediction:
+            predicted_label = (
+                food_prediction.predicted_label
+                if food_prediction is not None
+                else binary.predicted_label
+            )
+            confidence_score = (
+                food_prediction.confidence
+                if food_prediction is not None
+                else binary.confidence
+            )
+            prediction_status = "completed"
+            if binary.status == "rejected":
+                prediction_status = "rejected"
+            elif food_prediction is None or food_prediction.user_confirmation_required or requires_confirmation:
+                prediction_status = "pending"
+
             note_parts = [
-                "Auto-generated by vision inference.",
+                "Auto-generated by FitFuel CV inference.",
+                f"Binary gate: label={binary.predicted_label}, food_probability={binary.food_probability}, status={binary.status}.",
                 f"Primary match strategy: {match_strategy or 'unmapped'}.",
+                f"Mapping status: {mapping_status}.",
             ]
-            if requires_confirmation:
+            if binary.message:
+                note_parts.append(binary.message)
+            if prediction_status == "pending":
                 note_parts.append("User confirmation is required before logging this prediction.")
 
             prediction = PhotoPrediction(
                 photo_upload_id=photo_upload.id,
                 predicted_food_item_id=matched_food_item.id if matched_food_item else None,
                 selected_classifier_label_id=classifier_label.id if classifier_label else None,
-                model_name=inference.model_name,
-                prediction_status="completed",
-                predicted_label=inference.predicted_label,
-                confidence_score=inference.confidence_score,
-                estimated_grams=None,
-                estimated_calories=None,
-                estimated_protein_g=None,
-                estimated_carbs_g=None,
-                estimated_fat_g=None,
+                model_name="fitfuel_cv_resnet50_v1",
+                prediction_status=prediction_status,
+                predicted_label=predicted_label,
+                confidence_score=confidence_score,
+                estimated_grams=nutrition_estimate.serving_grams if nutrition_estimate else None,
+                estimated_calories=nutrition_estimate.estimated_calories if nutrition_estimate else None,
+                estimated_protein_g=nutrition_estimate.estimated_protein_g if nutrition_estimate else None,
+                estimated_carbs_g=nutrition_estimate.estimated_carbs_g if nutrition_estimate else None,
+                estimated_fat_g=nutrition_estimate.estimated_fat_g if nutrition_estimate else None,
                 notes=" ".join(note_parts),
+                inference_metadata_json={
+                    "binary_prediction": {
+                        "predicted_label": binary.predicted_label,
+                        "food_probability": binary.food_probability,
+                        "confidence": binary.confidence,
+                        "status": binary.status,
+                        "user_confirmation_required": binary.user_confirmation_required,
+                    },
+                    "food_prediction": (
+                        {
+                            "predicted_label": food_prediction.predicted_label,
+                            "confidence": food_prediction.confidence,
+                            "status": food_prediction.status,
+                            "user_confirmation_required": food_prediction.user_confirmation_required,
+                            "top_k": [
+                                {
+                                    "label": candidate.label,
+                                    "probability": candidate.probability,
+                                }
+                                for candidate in food_prediction.top_k
+                            ],
+                        }
+                        if food_prediction is not None
+                        else None
+                    ),
+                    "mapping_status": mapping_status,
+                    "match_strategy": match_strategy,
+                    "match_score": match_score,
+                    "serving_grams": nutrition_estimate.serving_grams if nutrition_estimate else None,
+                    "thresholds": {
+                        "food_accept_threshold": settings.vision_food_accept_threshold,
+                        "class_accept_threshold": settings.vision_class_accept_threshold,
+                    },
+                },
             )
             self.db.add(prediction)
             self.db.commit()
             self.db.refresh(prediction)
 
-            candidate_rows = self._build_prediction_candidate_rows(
-                photo_prediction_id=prediction.id,
-                top_predictions=inference.top_predictions,
-            )
+            if food_prediction is not None:
+                candidate_rows = self._build_cv_prediction_candidate_rows(
+                    photo_prediction_id=prediction.id,
+                    top_predictions=food_prediction.top_k,
+                )
+            else:
+                candidate_rows = []
+
             if candidate_rows:
                 self.db.add_all(candidate_rows)
                 self.db.commit()
 
             saved_prediction_id = prediction.id
 
+        top_predictions = []
+        if food_prediction is not None:
+            top_predictions = [
+                VisionTopPredictionResponse(
+                    class_index=index,
+                    label=candidate.label,
+                    confidence_score=candidate.probability,
+                )
+                for index, candidate in enumerate(food_prediction.top_k)
+            ]
+
         return VisionInferenceResponse(
             photo_upload_id=photo_upload.id,
-            model_name=inference.model_name,
-            predicted_label=inference.predicted_label,
-            confidence_score=inference.confidence_score,
+            model_name="fitfuel_cv_resnet50_v1",
+            predicted_label=food_prediction.predicted_label if food_prediction else binary.predicted_label,
+            confidence_score=food_prediction.confidence if food_prediction else binary.confidence,
             matched_food_item_id=matched_food_item.id if matched_food_item else None,
             matched_food_name=(
                 matched_food_item.display_name or matched_food_item.name
@@ -713,15 +896,34 @@ class PhotoService:
                 else None
             ),
             match_score=match_score,
-            top_predictions=[
-                VisionTopPredictionResponse(
-                    class_index=candidate.class_index,
-                    label=candidate.label,
-                    confidence_score=candidate.confidence_score,
-                )
-                for candidate in inference.top_predictions
-            ],
+            top_predictions=top_predictions,
             saved_prediction_id=saved_prediction_id,
+            binary_prediction=VisionBinaryPredictionResponse(
+                predicted_label=binary.predicted_label,
+                food_probability=binary.food_probability,
+                confidence=binary.confidence,
+                status=binary.status,
+            ),
+            food_prediction=(
+                VisionFoodPredictionResponse(
+                    predicted_label=food_prediction.predicted_label,
+                    confidence=food_prediction.confidence,
+                    status=food_prediction.status,
+                    user_confirmation_required=food_prediction.user_confirmation_required,
+                    top_k=[
+                        VisionProbabilityResponse(
+                            label=candidate.label,
+                            probability=candidate.probability,
+                        )
+                        for candidate in food_prediction.top_k
+                    ],
+                )
+                if food_prediction is not None
+                else None
+            ),
+            nutrition_estimate=nutrition_estimate,
+            mapping_status=mapping_status,
+            message=binary.message,
         )
 
     def list_feedback_history(

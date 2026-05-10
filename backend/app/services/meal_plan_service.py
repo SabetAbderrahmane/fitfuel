@@ -27,9 +27,9 @@ from app.schemas.meal_plan import (
 
 SLOT_CALORIE_SPLITS: dict[str, float] = {
     "breakfast": 0.25,
-    "lunch": 0.35,
+    "lunch": 0.30,
     "dinner": 0.30,
-    "snack": 0.10,
+    "snack": 0.15,
 }
 
 VALID_MEAL_SLOTS = set(SLOT_CALORIE_SPLITS)
@@ -196,6 +196,9 @@ DIET_REJECTION_FLAGS: dict[str, set[str]] = {
 
 TEMPLATE_FALLBACK_NOTE = (
     "Fallback raw-food generation used because no matching meal template was found."
+)
+INSUFFICIENT_TEMPLATE_NOTE = (
+    "Generated plan is below target because insufficient matching templates were available."
 )
 
 
@@ -521,9 +524,35 @@ class MealPlanService:
         return filtered
 
     @staticmethod
-    def _slot_target_calories(total_target_calories: float, meal_slot: str) -> float:
-        ratio = SLOT_CALORIE_SPLITS.get(meal_slot, 0.25)
+    def _normalized_slot_ratios(meal_slots: Iterable[str]) -> dict[str, float]:
+        slots = list(meal_slots)
+        total_ratio = sum(SLOT_CALORIE_SPLITS.get(slot, 0.25) for slot in slots)
+        if total_ratio <= 0:
+            return {slot: 1.0 / max(len(slots), 1) for slot in slots}
+        return {
+            slot: SLOT_CALORIE_SPLITS.get(slot, 0.25) / total_ratio
+            for slot in slots
+        }
+
+    @classmethod
+    def _slot_target_calories(
+        cls,
+        total_target_calories: float,
+        meal_slot: str,
+        slot_ratios: dict[str, float] | None = None,
+    ) -> float:
+        ratio = (
+            slot_ratios.get(meal_slot, SLOT_CALORIE_SPLITS.get(meal_slot, 0.25))
+            if slot_ratios is not None
+            else SLOT_CALORIE_SPLITS.get(meal_slot, 0.25)
+        )
         return round(total_target_calories * ratio, 2)
+
+    @staticmethod
+    def _slot_multiplier_bounds(meal_slot: str) -> tuple[float, float]:
+        if meal_slot == "snack":
+            return 0.5, 2.0
+        return 0.75, 2.5
 
     @staticmethod
     def _slot_gram_bounds(meal_slot: str) -> tuple[float, float]:
@@ -554,6 +583,7 @@ class MealPlanService:
         item: FoodItem,
         meal_slot: str,
         total_target_calories: float,
+        slot_ratios: dict[str, float] | None = None,
     ) -> float:
         nutrition = item.nutrition_fact
         assert nutrition is not None
@@ -566,7 +596,11 @@ class MealPlanService:
         if calories_per_100g <= 0:
             return round(self._clamp(default_serving, minimum_grams, maximum_grams), 2)
 
-        slot_target_calories = self._slot_target_calories(total_target_calories, meal_slot)
+        slot_target_calories = self._slot_target_calories(
+            total_target_calories,
+            meal_slot,
+            slot_ratios,
+        )
         estimated_grams = (slot_target_calories / calories_per_100g) * 100.0
 
         # Blend slot target with the food's own default serving to avoid absurd sizes.
@@ -636,11 +670,13 @@ class MealPlanService:
         meal_slot: str,
         active_goal: UserGoal,
         total_slots: int,
+        slot_ratios: dict[str, float] | None = None,
     ) -> float:
         planned_grams = self._planned_grams_for_slot(
             item=item,
             meal_slot=meal_slot,
             total_target_calories=float(active_goal.target_calories),
+            slot_ratios=slot_ratios,
         )
         calories, protein, carbs, fat = self._calculate_macros_for_grams(
             item,
@@ -650,8 +686,13 @@ class MealPlanService:
         slot_calorie_target = self._slot_target_calories(
             float(active_goal.target_calories),
             meal_slot,
+            slot_ratios,
         )
-        macro_ratio = SLOT_CALORIE_SPLITS.get(meal_slot, 1.0 / max(total_slots, 1))
+        macro_ratio = (
+            slot_ratios.get(meal_slot, 1.0 / max(total_slots, 1))
+            if slot_ratios is not None
+            else SLOT_CALORIE_SPLITS.get(meal_slot, 1.0 / max(total_slots, 1))
+        )
         protein_target = float(active_goal.target_protein_g) * macro_ratio
         carbs_target = float(active_goal.target_carbs_g) * macro_ratio
         fat_target = float(active_goal.target_fat_g) * macro_ratio
@@ -674,6 +715,7 @@ class MealPlanService:
         item: FoodItem,
         preferred_food_terms: Iterable[str],
         preferred_food_item_ids: set[str],
+        slot_ratios: dict[str, float] | None = None,
     ) -> float:
         score = 0.0
         if item.id in preferred_food_item_ids:
@@ -704,11 +746,12 @@ class MealPlanService:
         total_slots: int,
         preferred_food_terms: Iterable[str],
         preferred_food_item_ids: set[str],
+        slot_ratios: dict[str, float] | None = None,
     ) -> float:
         return (
             self._slot_rule_score(item, meal_slot)
             + self._macro_density_score(item, meal_slot)
-            + self._target_fit_score(item, meal_slot, active_goal, total_slots)
+            + self._target_fit_score(item, meal_slot, active_goal, total_slots, slot_ratios)
             + self._preferred_food_boost(
                 item,
                 preferred_food_terms,
@@ -901,9 +944,18 @@ class MealPlanService:
         meal_slot: str,
         active_goal: UserGoal,
         total_slots: int,
+        slot_ratios: dict[str, float] | None = None,
     ) -> float:
-        macro_ratio = SLOT_CALORIE_SPLITS.get(meal_slot, 1.0 / max(total_slots, 1))
-        calorie_target = self._slot_target_calories(float(active_goal.target_calories), meal_slot)
+        macro_ratio = (
+            slot_ratios.get(meal_slot, 1.0 / max(total_slots, 1))
+            if slot_ratios is not None
+            else SLOT_CALORIE_SPLITS.get(meal_slot, 1.0 / max(total_slots, 1))
+        )
+        calorie_target = self._slot_target_calories(
+            float(active_goal.target_calories),
+            meal_slot,
+            slot_ratios,
+        )
         protein_target = float(active_goal.target_protein_g) * macro_ratio
         carbs_target = float(active_goal.target_carbs_g) * macro_ratio
         fat_target = float(active_goal.target_fat_g) * macro_ratio
@@ -955,8 +1007,15 @@ class MealPlanService:
         used_recipe_ids: set[str],
         preference_terms: dict[str, list[str]],
         recent_source_usage: dict[str, int],
+        slot_ratios: dict[str, float] | None = None,
     ) -> float:
-        score = self._template_target_fit_score(template, meal_slot, active_goal, total_slots)
+        score = self._template_target_fit_score(
+            template,
+            meal_slot,
+            active_goal,
+            total_slots,
+            slot_ratios,
+        )
         score += self._preferred_template_boost(template, preferred_food_terms, preferred_food_item_ids)
 
         tags = self._template_diet_tags(template)
@@ -984,6 +1043,7 @@ class MealPlanService:
         used_recipe_ids: set[str],
         preference_terms: dict[str, list[str]],
         recent_source_usage: dict[str, int],
+        slot_ratios: dict[str, float] | None = None,
     ) -> MealTemplate | None:
         available = [
             template
@@ -994,21 +1054,38 @@ class MealPlanService:
         if not available:
             return None
 
-        return max(
-            available,
-            key=lambda template: self._template_score(
-                template=template,
-                meal_slot=meal_slot,
-                active_goal=active_goal,
-                total_slots=total_slots,
-                preferred_food_terms=preferred_food_terms,
-                preferred_food_item_ids=preferred_food_item_ids,
-                used_template_ids=used_template_ids,
-                used_recipe_ids=used_recipe_ids,
-                preference_terms=preference_terms,
-                recent_source_usage=recent_source_usage,
+        scored = sorted(
+            (
+                (
+                    template,
+                    self._template_score(
+                        template=template,
+                        meal_slot=meal_slot,
+                        active_goal=active_goal,
+                        total_slots=total_slots,
+                        preferred_food_terms=preferred_food_terms,
+                        preferred_food_item_ids=preferred_food_item_ids,
+                        used_template_ids=used_template_ids,
+                        used_recipe_ids=used_recipe_ids,
+                        preference_terms=preference_terms,
+                        recent_source_usage=recent_source_usage,
+                        slot_ratios=slot_ratios,
+                    ),
+                )
+                for template in available
             ),
+            key=lambda pair: pair[1],
+            reverse=True,
         )
+        best_score = scored[0][1]
+        close_pool = [
+            pair
+            for pair in scored[:5]
+            if best_score == 0 or pair[1] >= best_score * 0.85
+        ]
+        pool = close_pool or scored[:1]
+        index = len(used_template_ids) % len(pool)
+        return pool[index][0]
 
     def _load_recent_source_usage(self, current_user: User) -> dict[str, int]:
         usage: dict[str, int] = defaultdict(int)
@@ -1068,6 +1145,7 @@ class MealPlanService:
         total_slots: int,
         preferred_food_terms: Iterable[str],
         preferred_food_item_ids: set[str],
+        slot_ratios: dict[str, float] | None = None,
     ) -> FoodItem:
         scored_pairs = sorted(
             (
@@ -1081,6 +1159,7 @@ class MealPlanService:
                         total_slots=total_slots,
                         preferred_food_terms=preferred_food_terms,
                         preferred_food_item_ids=preferred_food_item_ids,
+                        slot_ratios=slot_ratios,
                     ),
                 )
                 for item in candidates
@@ -1101,6 +1180,109 @@ class MealPlanService:
 
         # Fallback pass: if catalog is tiny, at least pick the best remaining sane item
         return scored_pairs[0][0]
+
+    def _template_base_macros(
+        self,
+        template: MealTemplate,
+    ) -> tuple[float, float, float, float]:
+        calories = protein = carbs = fat = 0.0
+        if template.recipe is None:
+            return 0.0, 0.0, 0.0, 0.0
+
+        for ingredient in template.recipe.ingredients or []:
+            food_item = ingredient.food_item
+            if (
+                food_item is None
+                or food_item.nutrition_fact is None
+                or float(ingredient.grams or 0) <= 0
+            ):
+                continue
+            item_calories, item_protein, item_carbs, item_fat = self._calculate_macros_for_grams(
+                food_item,
+                float(ingredient.grams),
+            )
+            calories += item_calories
+            protein += item_protein
+            carbs += item_carbs
+            fat += item_fat
+
+        return (
+            round(calories, 2),
+            round(protein, 2),
+            round(carbs, 2),
+            round(fat, 2),
+        )
+
+    def _serving_multiplier_for_template(
+        self,
+        template: MealTemplate,
+        meal_slot: str,
+        slot_target_calories: float,
+    ) -> float:
+        base_calories, _protein, _carbs, _fat = self._template_base_macros(template)
+        if base_calories <= 0:
+            return 1.0
+
+        minimum, maximum = self._slot_multiplier_bounds(meal_slot)
+        multiplier = self._clamp(slot_target_calories / base_calories, minimum, maximum)
+        max_allowed = maximum
+
+        if template.recipe is not None:
+            max_source_grams = max(
+                (float(ingredient.grams or 0) for ingredient in template.recipe.ingredients or []),
+                default=0.0,
+            )
+            if max_source_grams > 0:
+                max_allowed = min(max_allowed, 600.0 / max_source_grams)
+
+        slot_calorie_cap = max(1200.0, slot_target_calories * 1.15)
+        max_allowed = min(max_allowed, slot_calorie_cap / base_calories)
+
+        if max_allowed < minimum:
+            multiplier = max_allowed
+        else:
+            multiplier = self._clamp(multiplier, minimum, max_allowed)
+
+        return round(max(multiplier, 0.1), 2)
+
+    @staticmethod
+    def _target_status(total_calories: float, target_calories: float) -> str:
+        if target_calories <= 0:
+            return "within_target"
+        ratio = total_calories / target_calories
+        if ratio < 0.85:
+            return "below_target"
+        if ratio > 1.15:
+            return "above_target"
+        return "within_target"
+
+    def _generation_metadata_note(
+        self,
+        active_goal: UserGoal,
+        plan: MealPlan,
+    ) -> str:
+        target_calories = float(active_goal.target_calories)
+        delta = round(plan.total_calories - target_calories, 2)
+        delta_percent = round((delta / target_calories) * 100.0, 2) if target_calories > 0 else 0.0
+        target_status = self._target_status(plan.total_calories, target_calories)
+        return (
+            "Generation target summary: "
+            f"target_calories={round(target_calories, 2)}, "
+            f"actual_calories={plan.total_calories}, "
+            f"calorie_target_delta={delta}, "
+            f"calorie_target_delta_percent={delta_percent}, "
+            f"target_protein_g={round(float(active_goal.target_protein_g), 2)}, "
+            f"actual_protein_g={plan.total_protein_g}, "
+            f"target_carbs_g={round(float(active_goal.target_carbs_g), 2)}, "
+            f"actual_carbs_g={plan.total_carbs_g}, "
+            f"target_fat_g={round(float(active_goal.target_fat_g), 2)}, "
+            f"actual_fat_g={plan.total_fat_g}, "
+            f"target_status={target_status}."
+        )
+
+    @staticmethod
+    def _append_plan_note(plan: MealPlan, note: str) -> None:
+        plan.notes = f"{plan.notes}\n{note}" if plan.notes else note
 
     # -------------------------------------------------------------------------
     # Meal plan item builder
@@ -1147,6 +1329,7 @@ class MealPlanService:
         position: int,
         recipe_name: str,
         template: MealTemplate,
+        serving_multiplier: float = 1.0,
     ) -> MealPlanItem | None:
         food_item = ingredient.food_item
         if (
@@ -1157,7 +1340,7 @@ class MealPlanService:
         ):
             return None
 
-        planned_grams = round(float(ingredient.grams), 2)
+        planned_grams = round(float(ingredient.grams) * serving_multiplier, 2)
         default_serving = float(food_item.default_serving_size_g or 100.0)
         planned_quantity = round(planned_grams / default_serving, 2) if default_serving > 0 else 1.0
         calories, protein, carbs, fat = self._calculate_macros_for_grams(
@@ -1178,7 +1361,7 @@ class MealPlanService:
             protein_g=protein,
             carbs_g=carbs,
             fat_g=fat,
-            notes=f"From recipe: {recipe_name}",
+            notes=f"From recipe: {recipe_name} | serving_multiplier={serving_multiplier:.2f}",
             source_recipe_id=ingredient.recipe_id,
             source_recipe_name=recipe_name,
             source_template_id=template.id,
@@ -1302,9 +1485,51 @@ class MealPlanService:
         preferred_food_terms = preference_terms.get("preferred_food", [])
         preferred_food_item_ids = set(payload.preferred_food_item_ids)
         total_slots = len(meal_slots)
+        slot_ratios = self._normalized_slot_ratios(meal_slots)
         template_pool = self._load_template_generation_pool()
         recent_source_usage = self._load_recent_source_usage(current_user)
         raw_candidates: list[FoodItem] | None = None
+        filler_templates_added = False
+
+        def add_template_items(
+            normalized_slot: str,
+            selected_template: MealTemplate,
+            slot_target_calories: float,
+        ) -> int:
+            if selected_template.recipe is None:
+                return 0
+
+            recipe = selected_template.recipe
+            serving_multiplier = self._serving_multiplier_for_template(
+                selected_template,
+                normalized_slot,
+                slot_target_calories,
+            )
+            created_for_template = 0
+            for ingredient in recipe.ingredients:
+                slot_positions[normalized_slot] += 1
+                item = self._build_meal_plan_item_from_recipe_ingredient(
+                    meal_plan_id=meal_plan.id,
+                    ingredient=ingredient,
+                    meal_slot=normalized_slot,
+                    position=slot_positions[normalized_slot],
+                    recipe_name=recipe.name,
+                    template=selected_template,
+                    serving_multiplier=serving_multiplier,
+                )
+                if item is None:
+                    slot_positions[normalized_slot] -= 1
+                    continue
+                self.db.add(item)
+                items.append(item)
+                used_food_item_ids.add(item.food_item_id)
+                created_for_template += 1
+
+            if created_for_template:
+                used_template_ids.add(selected_template.id)
+                if selected_template.recipe_id:
+                    used_recipe_ids.add(selected_template.recipe_id)
+            return created_for_template
 
         for normalized_slot in meal_slots:
             slot_templates = self._filter_templates_for_slot(
@@ -1326,33 +1551,22 @@ class MealPlanService:
                     used_recipe_ids=used_recipe_ids,
                     preference_terms=preference_terms,
                     recent_source_usage=recent_source_usage,
+                    slot_ratios=slot_ratios,
                 )
 
                 if selected_template is not None and selected_template.recipe is not None:
-                    recipe = selected_template.recipe
-                    created_for_template = 0
-                    for ingredient in recipe.ingredients:
-                        slot_positions[normalized_slot] += 1
-                        item = self._build_meal_plan_item_from_recipe_ingredient(
-                            meal_plan_id=meal_plan.id,
-                            ingredient=ingredient,
-                            meal_slot=normalized_slot,
-                            position=slot_positions[normalized_slot],
-                            recipe_name=recipe.name,
-                            template=selected_template,
-                        )
-                        if item is None:
-                            slot_positions[normalized_slot] -= 1
-                            continue
-                        self.db.add(item)
-                        items.append(item)
-                        used_food_item_ids.add(item.food_item_id)
-                        created_for_template += 1
+                    slot_target_calories = self._slot_target_calories(
+                        total_target_calories,
+                        normalized_slot,
+                        slot_ratios,
+                    )
+                    created_for_template = add_template_items(
+                        normalized_slot,
+                        selected_template,
+                        slot_target_calories,
+                    )
 
                     if created_for_template:
-                        used_template_ids.add(selected_template.id)
-                        if selected_template.recipe_id:
-                            used_recipe_ids.add(selected_template.recipe_id)
                         continue
 
                 fallback_slots.add(normalized_slot)
@@ -1372,12 +1586,14 @@ class MealPlanService:
                     total_slots=total_slots,
                     preferred_food_terms=preferred_food_terms,
                     preferred_food_item_ids=preferred_food_item_ids,
+                    slot_ratios=slot_ratios,
                 )
 
                 planned_grams = self._planned_grams_for_slot(
                     item=selected,
                     meal_slot=normalized_slot,
                     total_target_calories=total_target_calories,
+                    slot_ratios=slot_ratios,
                 )
                 default_serving = float(selected.default_serving_size_g or 100.0)
                 planned_quantity = round(planned_grams / default_serving, 2) if default_serving > 0 else 1.0
@@ -1397,15 +1613,87 @@ class MealPlanService:
                 items.append(item)
                 used_food_item_ids.add(selected.id)
 
+        self._apply_totals(meal_plan, items)
+
+        filler_slot_order = [
+            slot for slot in ["snack", "lunch", "dinner", "breakfast"] if slot in meal_slots
+        ] or meal_slots
+        filler_attempt_limit = max(len(template_pool), 1)
+        filler_attempts = 0
+        while (
+            self._target_status(meal_plan.total_calories, total_target_calories) == "below_target"
+            and filler_attempts < filler_attempt_limit
+        ):
+            filler_attempts += 1
+            added_this_round = False
+            for filler_slot in filler_slot_order:
+                if self._target_status(meal_plan.total_calories, total_target_calories) != "below_target":
+                    break
+
+                slot_templates = self._filter_templates_for_slot(
+                    templates=template_pool,
+                    meal_slot=filler_slot,
+                    allergy_terms=allergy_terms,
+                    preference_terms=preference_terms,
+                )
+                selected_template = self._pick_best_template_for_slot(
+                    templates=slot_templates,
+                    meal_slot=filler_slot,
+                    active_goal=active_goal,
+                    total_slots=total_slots,
+                    preferred_food_terms=preferred_food_terms,
+                    preferred_food_item_ids=preferred_food_item_ids,
+                    used_template_ids=used_template_ids,
+                    used_recipe_ids=used_recipe_ids,
+                    preference_terms=preference_terms,
+                    recent_source_usage=recent_source_usage,
+                    slot_ratios=slot_ratios,
+                )
+                if selected_template is None:
+                    continue
+
+                remaining_calories = max(
+                    0.0,
+                    (total_target_calories * 0.95) - meal_plan.total_calories,
+                )
+                slot_target_calories = remaining_calories or self._slot_target_calories(
+                    total_target_calories,
+                    filler_slot,
+                    slot_ratios,
+                )
+                created_for_template = add_template_items(
+                    filler_slot,
+                    selected_template,
+                    slot_target_calories,
+                )
+                if created_for_template:
+                    self._apply_totals(meal_plan, items)
+                    filler_templates_added = True
+                    added_this_round = True
+                    break
+
+            if not added_this_round:
+                break
+
         if fallback_slots:
             fallback_note = (
                 f"{TEMPLATE_FALLBACK_NOTE} Slot(s): {', '.join(sorted(fallback_slots))}."
             )
-            meal_plan.notes = (
-                f"{meal_plan.notes}\n{fallback_note}" if meal_plan.notes else fallback_note
+            self._append_plan_note(meal_plan, fallback_note)
+
+        if filler_templates_added:
+            self._append_plan_note(
+                meal_plan,
+                "Additional target-filler meal templates were added to improve calorie coverage.",
             )
 
         self._apply_totals(meal_plan, items)
+        if self._target_status(meal_plan.total_calories, total_target_calories) == "below_target":
+            self._append_plan_note(meal_plan, INSUFFICIENT_TEMPLATE_NOTE)
+        self._append_plan_note(
+            meal_plan,
+            self._generation_metadata_note(active_goal, meal_plan),
+        )
 
         self.db.commit()
         self.db.refresh(meal_plan)

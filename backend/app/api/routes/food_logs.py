@@ -5,7 +5,12 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.food_log import FoodLogCreateRequest, FoodLogResponse, MealType
+from app.schemas.food_log import (
+    FoodLogCreateRequest,
+    FoodLogDailySummaryResponse,
+    FoodLogResponse,
+    MealType,
+)
 from app.services.auth_service import get_current_user
 from app.services.food_log_service import FoodLogService
 
@@ -50,6 +55,23 @@ async def list_food_logs(
         offset=offset,
     )
     return [FoodLogResponse.model_validate(log) for log in logs]
+
+
+@router.get(
+    "/daily-summary",
+    response_model=FoodLogDailySummaryResponse,
+    summary="Get current user's daily food log nutrition summary",
+)
+async def get_daily_summary(
+    summary_date: date | None = Query(default=None, alias="date"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FoodLogDailySummaryResponse:
+    service = FoodLogService(db)
+    return service.get_daily_summary(
+        current_user=current_user,
+        summary_date=summary_date or date.today(),
+    )
 
 
 @router.get(

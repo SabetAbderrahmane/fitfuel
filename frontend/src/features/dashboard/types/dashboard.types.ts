@@ -110,6 +110,15 @@ export type ProgressSnapshotResponse = {
   updated_at: string;
 };
 
+export type FoodLogDailySummaryResponse = {
+  date: string;
+  total_calories: number;
+  total_protein_g: number;
+  total_carbs_g: number;
+  total_fat_g: number;
+  log_count: number;
+};
+
 export type MealPlanItemResponse = {
   id: string;
   meal_plan_id: string;
@@ -217,6 +226,7 @@ export type DashboardData = {
   profile: UserProfileResponse | null;
   currentGoal: UserGoalResponse | null;
   latestSnapshot: ProgressSnapshotResponse | null;
+  dailyFoodLogSummary: FoodLogDailySummaryResponse;
   latestMealPlan: MealPlanResponse | null;
   weightLogs: WeightLogResponse[];
   foodLogs: FoodLogResponse[];

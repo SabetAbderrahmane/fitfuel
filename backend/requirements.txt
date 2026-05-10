@@ -14,6 +14,8 @@ pandas>=2.2,<3.0
 scikit-learn>=1.5,<2.0
 scipy>=1.13,<2.0
 pillow>=10.0,<12.0
+torch
+torchvision
 passlib[bcrypt]==1.7.4
 bcrypt==4.3.0
 google-genai>=1.0,<2.0

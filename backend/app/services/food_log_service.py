@@ -1,14 +1,14 @@
 from datetime import date
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, desc, select
+from sqlalchemy import Select, desc, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.food_item import FoodItem
 from app.models.food_log import FoodLog
 from app.models.food_log_item import FoodLogItem
 from app.models.user import User
-from app.schemas.food_log import FoodLogCreateRequest
+from app.schemas.food_log import FoodLogCreateRequest, FoodLogDailySummaryResponse
 
 
 class FoodLogService:
@@ -162,6 +162,31 @@ class FoodLogService:
             statement = statement.where(FoodLog.meal_type == meal_type)
 
         return list(self.db.scalars(statement).all())
+
+    def get_daily_summary(
+        self,
+        current_user: User,
+        summary_date: date,
+    ) -> FoodLogDailySummaryResponse:
+        statement = select(
+            func.coalesce(func.sum(FoodLog.total_calories), 0.0),
+            func.coalesce(func.sum(FoodLog.total_protein_g), 0.0),
+            func.coalesce(func.sum(FoodLog.total_carbs_g), 0.0),
+            func.coalesce(func.sum(FoodLog.total_fat_g), 0.0),
+            func.count(FoodLog.id),
+        ).where(
+            FoodLog.user_id == current_user.id,
+            FoodLog.logged_for_date == summary_date,
+        )
+        total_calories, total_protein, total_carbs, total_fat, log_count = self.db.execute(statement).one()
+        return FoodLogDailySummaryResponse(
+            date=summary_date,
+            total_calories=round(float(total_calories or 0), 2),
+            total_protein_g=round(float(total_protein or 0), 2),
+            total_carbs_g=round(float(total_carbs or 0), 2),
+            total_fat_g=round(float(total_fat or 0), 2),
+            log_count=int(log_count or 0),
+        )
 
     def get_food_log(
         self,

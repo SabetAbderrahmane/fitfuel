@@ -62,9 +62,29 @@ class Settings(BaseSettings):
     max_photo_upload_mb: int = Field(default=10, alias="MAX_PHOTO_UPLOAD_MB")
 
     # Vision
-    vision_device: str = Field(default="cpu", alias="VISION_DEVICE")
+    vision_device: str = Field(default="auto", alias="VISION_DEVICE")
     vision_model_path: str = Field(default="", alias="VISION_MODEL_PATH")
     vision_class_names_path: str = Field(default="", alias="VISION_CLASS_NAMES_PATH")
+    vision_binary_model_path: str = Field(
+        default=str(BASE_DIR / "ml_artifacts" / "binary_resnet50_best.pth"),
+        alias="VISION_BINARY_MODEL_PATH",
+    )
+    vision_binary_class_names_path: str = Field(
+        default=str(BASE_DIR / "ml_artifacts" / "binary_class_names.json"),
+        alias="VISION_BINARY_CLASS_NAMES_PATH",
+    )
+    vision_food_model_path: str = Field(
+        default=str(BASE_DIR / "ml_artifacts" / "food101_subset_resnet50_best.pth"),
+        alias="VISION_FOOD_MODEL_PATH",
+    )
+    vision_food_class_names_path: str = Field(
+        default=str(BASE_DIR / "ml_artifacts" / "food101_subset_class_names.json"),
+        alias="VISION_FOOD_CLASS_NAMES_PATH",
+    )
+    vision_food_accept_threshold: float = Field(default=0.90, alias="VISION_FOOD_ACCEPT_THRESHOLD")
+    vision_class_accept_threshold: float = Field(default=0.75, alias="VISION_CLASS_ACCEPT_THRESHOLD")
+    vision_top_k: int = Field(default=5, alias="VISION_TOP_K")
+    vision_default_serving_grams: float = Field(default=100.0, alias="VISION_DEFAULT_SERVING_GRAMS")
 
     # Gemini chat assistant
     gemini_enabled: bool = Field(default=False, alias="GEMINI_ENABLED")

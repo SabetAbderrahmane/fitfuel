@@ -36,14 +36,22 @@ def add_profile(db: Session, user: User) -> UserProfile:
     return profile
 
 
-def add_goal(db: Session, user: User) -> UserGoal:
+def add_goal(
+    db: Session,
+    user: User,
+    *,
+    calories: float = 2000,
+    protein: float = 130,
+    carbs: float = 220,
+    fat: float = 60,
+) -> UserGoal:
     goal = UserGoal(
         user_id=user.id,
         goal_type="maintain",
-        target_calories=2000,
-        target_protein_g=130,
-        target_carbs_g=220,
-        target_fat_g=60,
+        target_calories=calories,
+        target_protein_g=protein,
+        target_carbs_g=carbs,
+        target_fat_g=fat,
         is_active=True,
     )
     db.add(goal)
@@ -247,7 +255,8 @@ def test_template_based_generation_succeeds_when_templates_exist(
     body = response.json()
     assert body["generation_mode"] == "rule_based"
     assert body["item_count"] == 2
-    assert all(item["notes"] == "From recipe: Chicken Rice Template" for item in body["items"])
+    assert all(item["notes"].startswith("From recipe: Chicken Rice Template") for item in body["items"])
+    assert all("serving_multiplier=" in item["notes"] for item in body["items"])
     assert all(item["source_recipe_name"] == "Chicken Rice Template" for item in body["items"])
     assert all(item["source_template_name"] == "Chicken Rice Template" for item in body["items"])
     assert all(item["source_generation_type"] == "meal_template" for item in body["items"])
@@ -455,7 +464,8 @@ def test_template_generation_persists_plan_and_items(
     ).all()
     assert persisted_plan is not None
     assert len(persisted_items) == 1
-    assert persisted_items[0].notes == "From recipe: Salmon Recipe"
+    assert persisted_items[0].notes.startswith("From recipe: Salmon Recipe")
+    assert "serving_multiplier=" in persisted_items[0].notes
     assert persisted_items[0].source_recipe_name == "Salmon Recipe"
     assert persisted_items[0].source_template_name == "Salmon Recipe"
     assert persisted_items[0].source_generation_type == "meal_template"
@@ -511,6 +521,197 @@ def test_template_generated_response_includes_metadata_and_grouping(
     assert len(body["grouped_meals"][0]["items"]) == 2
 
 
+def test_generated_full_day_plan_targets_3000_calorie_goal(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user, calories=3000, protein=180, carbs=330, fat=90)
+    dense_food = add_food(
+        db_session,
+        "Target Dense Bowl Base",
+        calories=300,
+        protein=20,
+        carbs=35,
+        fat=9,
+    )
+    for slot in ["breakfast", "lunch", "dinner", "snack"]:
+        add_recipe_template(
+            db_session,
+            f"Target {slot.title()}",
+            meal_slot=slot,
+            ingredients=[dense_food],
+            grams=[200],
+            estimated_calories=600,
+            estimated_protein_g=40,
+            estimated_carbs_g=70,
+            estimated_fat_g=18,
+        )
+
+    response = client.post(
+        "/api/v1/meal-plans/generate",
+        json=generate_payload(meal_slots=["breakfast", "lunch", "dinner", "snack"]),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert 2550 <= body["total_calories"] <= 3450
+    assert "target_status=within_target" in body["notes"]
+
+
+def test_generated_high_calorie_plan_is_not_tiny_when_templates_exist(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user, calories=3500, protein=210, carbs=385, fat=105)
+    dense_food = add_food(
+        db_session,
+        "High Target Bowl Base",
+        calories=300,
+        protein=20,
+        carbs=35,
+        fat=9,
+    )
+    for slot in ["breakfast", "lunch", "dinner", "snack"]:
+        add_recipe_template(
+            db_session,
+            f"High Target {slot.title()}",
+            meal_slot=slot,
+            ingredients=[dense_food],
+            grams=[200],
+            estimated_calories=600,
+            estimated_protein_g=40,
+            estimated_carbs_g=70,
+            estimated_fat_g=18,
+        )
+
+    response = client.post(
+        "/api/v1/meal-plans/generate",
+        json=generate_payload(meal_slots=["breakfast", "lunch", "dinner", "snack"]),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["total_calories"] > 1500
+    assert 2975 <= body["total_calories"] <= 4025
+
+
+def test_recipe_ingredients_are_scaled_without_mutating_source_rows(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user, calories=2500)
+    tofu = add_food(db_session, "Scaling Tofu", calories=200, protein=20)
+    template = add_recipe_template(
+        db_session,
+        "Scaling Tofu Bowl",
+        ingredients=[tofu],
+        grams=[150],
+        estimated_calories=300,
+    )
+    source_ingredient = db_session.scalar(
+        select(RecipeIngredient).where(RecipeIngredient.recipe_id == template.recipe_id)
+    )
+    assert source_ingredient is not None
+    original_grams = source_ingredient.grams
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    db_session.refresh(source_ingredient)
+    body = response.json()
+    assert source_ingredient.grams == original_grams
+    assert body["items"][0]["planned_grams"] > original_grams
+    assert "serving_multiplier=" in body["items"][0]["notes"]
+
+
+def test_max_items_per_slot_does_not_truncate_recipe_ingredients(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    chicken = add_food(db_session, "Expansion Chicken", calories=180, protein=30)
+    rice = add_food(db_session, "Expansion Rice", calories=130, protein=3, carbs=28, category="carb")
+    beans = add_food(db_session, "Expansion Beans", calories=120, protein=9, carbs=21, category="protein")
+    add_recipe_template(
+        db_session,
+        "Expansion Bowl",
+        ingredients=[chicken, rice, beans],
+        grams=[100, 100, 100],
+    )
+
+    response = client.post(
+        "/api/v1/meal-plans/generate",
+        json=generate_payload(max_items_per_slot=1),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["item_count"] == 3
+
+
+def test_insufficient_templates_are_marked_when_plan_stays_below_target(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user, calories=3500)
+    lean_food = add_food(db_session, "Tiny Lean Template Food", calories=80, protein=12)
+    add_recipe_template(
+        db_session,
+        "Tiny Lean Lunch",
+        ingredients=[lean_food],
+        grams=[100],
+        estimated_calories=80,
+    )
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["total_calories"] < 2975
+    assert "insufficient matching templates" in body["notes"]
+    assert "target_status=below_target" in body["notes"]
+
+
+def test_meal_plan_totals_equal_sum_of_generated_items(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user, calories=2800)
+    salmon = add_food(db_session, "Totals Salmon", calories=206, protein=22, fat=12)
+    rice = add_food(db_session, "Totals Rice", calories=130, protein=3, carbs=28, fat=0.3, category="carb")
+    add_recipe_template(
+        db_session,
+        "Totals Dinner",
+        meal_slot="dinner",
+        ingredients=[salmon, rice],
+        grams=[180, 220],
+        estimated_calories=657,
+    )
+
+    response = client.post(
+        "/api/v1/meal-plans/generate",
+        json=generate_payload(meal_slots=["dinner"]),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["total_calories"] == round(sum(item["calories"] for item in body["items"]), 2)
+    assert body["total_protein_g"] == round(sum(item["protein_g"] for item in body["items"]), 2)
+    assert body["total_carbs_g"] == round(sum(item["carbs_g"] for item in body["items"]), 2)
+    assert body["total_fat_g"] == round(sum(item["fat_g"] for item in body["items"]), 2)
+
+
 def test_repeated_generation_prefers_some_template_variety(
     client: TestClient,
     db_session: Session,
@@ -535,13 +736,19 @@ def test_repeated_generation_prefers_some_template_variety(
         estimated_protein_g=44,
     )
 
-    recipes = []
+    recipe_sets = []
     for _ in range(2):
         response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
         assert response.status_code == 201
-        recipes.append(response.json()["items"][0]["source_recipe_name"])
+        recipe_sets.append(
+            {
+                item["source_recipe_name"]
+                for item in response.json()["items"]
+                if item["source_recipe_name"] is not None
+            }
+        )
 
-    assert len(set(recipes)) > 1
+    assert any(len(recipe_names) > 1 for recipe_names in recipe_sets)
 
 
 def test_missing_profile_blocks_generation(

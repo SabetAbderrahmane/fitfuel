@@ -17,11 +17,18 @@ frontend/out/
 backend/.venv/
 backend/__pycache__/
 backend/.pytest_cache/
+backend/pytest-cache-files-*/
 backend/.mypy_cache/
 backend/.ruff_cache/
 backend/**/*.pyc
 backend/data/raw/
 backend/data/processed/
+backend/ml_artifacts/*
+!backend/ml_artifacts/.gitkeep
+!backend/ml_artifacts/README.md
+backend/uploads/*
+!backend/uploads/.gitkeep
+!backend/uploads/README.md
 *.csv
 *.parquet
 

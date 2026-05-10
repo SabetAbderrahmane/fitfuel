@@ -77,21 +77,22 @@ export default function DashboardPage() {
     }
 
     const snapshot = dashboardQuery.data.latestSnapshot;
+    const dailySummary = dashboardQuery.data.dailyFoodLogSummary;
     const currentGoal = dashboardQuery.data.currentGoal;
 
     return {
-      consumedCalories: Math.round(snapshot?.consumed_calories ?? 0),
+      consumedCalories: Math.round(dailySummary.total_calories),
       targetCalories: snapshot?.target_calories ?? currentGoal.target_calories,
       protein: {
-        current: Math.round(snapshot?.consumed_protein_g ?? 0),
+        current: Math.round(dailySummary.total_protein_g),
         target: snapshot?.target_protein_g ?? currentGoal.target_protein_g,
       },
       carbs: {
-        current: Math.round(snapshot?.consumed_carbs_g ?? 0),
+        current: Math.round(dailySummary.total_carbs_g),
         target: snapshot?.target_carbs_g ?? currentGoal.target_carbs_g,
       },
       fats: {
-        current: Math.round(snapshot?.consumed_fat_g ?? 0),
+        current: Math.round(dailySummary.total_fat_g),
         target: snapshot?.target_fat_g ?? currentGoal.target_fat_g,
       },
     };

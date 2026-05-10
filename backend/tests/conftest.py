@@ -27,13 +27,20 @@ from app.api.routes.meal_plans import router as meal_plans_router  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.models.allergy import Allergy  # noqa: E402
+from app.models.classifier_label import ClassifierLabel  # noqa: E402
+from app.models.classifier_label_food_map import ClassifierLabelFoodMap  # noqa: E402
 from app.models.dietary_preference import DietaryPreference  # noqa: E402
 from app.models.food_alias import FoodAlias  # noqa: E402
 from app.models.food_item import FoodItem  # noqa: E402
+from app.models.food_log import FoodLog  # noqa: E402
+from app.models.food_log_item import FoodLogItem  # noqa: E402
 from app.models.meal_plan import MealPlan  # noqa: E402
 from app.models.meal_plan_item import MealPlanItem  # noqa: E402
 from app.models.meal_template import MealTemplate  # noqa: E402
 from app.models.nutrition_fact import NutritionFact  # noqa: E402
+from app.models.photo_prediction import PhotoPrediction  # noqa: E402
+from app.models.photo_prediction_candidate import PhotoPredictionCandidate  # noqa: E402
+from app.models.photo_upload import PhotoUpload  # noqa: E402
 from app.models.recipe import Recipe  # noqa: E402
 from app.models.recipe_ingredient import RecipeIngredient  # noqa: E402
 from app.models.user import User  # noqa: E402
@@ -51,6 +58,13 @@ TEST_TABLES = [
     FoodItem.__table__,
     FoodAlias.__table__,
     NutritionFact.__table__,
+    FoodLog.__table__,
+    FoodLogItem.__table__,
+    ClassifierLabel.__table__,
+    ClassifierLabelFoodMap.__table__,
+    PhotoUpload.__table__,
+    PhotoPrediction.__table__,
+    PhotoPredictionCandidate.__table__,
     Recipe.__table__,
     RecipeIngredient.__table__,
     MealTemplate.__table__,

@@ -68,6 +68,7 @@ class PhotoPredictionResponse(BaseModel):
     estimated_fat_g: float | None
 
     notes: str | None
+    inference_metadata_json: dict | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -129,12 +130,42 @@ class VisionTopPredictionResponse(BaseModel):
     confidence_score: float
 
 
+class VisionProbabilityResponse(BaseModel):
+    label: str
+    probability: float
+
+
+class VisionBinaryPredictionResponse(BaseModel):
+    predicted_label: str
+    food_probability: float
+    confidence: float
+    status: Literal["accepted", "rejected", "uncertain"]
+
+
+class VisionFoodPredictionResponse(BaseModel):
+    predicted_label: str
+    confidence: float
+    status: Literal["accepted", "uncertain"]
+    user_confirmation_required: bool
+    top_k: list[VisionProbabilityResponse]
+
+
+class VisionNutritionEstimateResponse(BaseModel):
+    food_item_id: str
+    food_name: str
+    serving_grams: float
+    estimated_calories: float
+    estimated_protein_g: float
+    estimated_carbs_g: float
+    estimated_fat_g: float
+
+
 class VisionInferenceResponse(BaseModel):
     photo_upload_id: str
-    model_name: str
+    model_name: str | None = None
 
-    predicted_label: str
-    confidence_score: float
+    predicted_label: str | None = None
+    confidence_score: float | None = None
 
     matched_food_item_id: str | None
     matched_food_name: str | None
@@ -142,3 +173,9 @@ class VisionInferenceResponse(BaseModel):
 
     top_predictions: list[VisionTopPredictionResponse]
     saved_prediction_id: str | None
+
+    binary_prediction: VisionBinaryPredictionResponse | None = None
+    food_prediction: VisionFoodPredictionResponse | None = None
+    nutrition_estimate: VisionNutritionEstimateResponse | None = None
+    mapping_status: Literal["mapped", "unmapped", "needs_confirmation"] | None = None
+    message: str | None = None

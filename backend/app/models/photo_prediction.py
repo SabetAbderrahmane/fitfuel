@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import CheckConstraint, Float, ForeignKey, String, Text
+from sqlalchemy import CheckConstraint, Float, ForeignKey, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -96,6 +96,10 @@ class PhotoPrediction(Base, TimestampMixin):
 
     notes: Mapped[str | None] = mapped_column(
         Text,
+        nullable=True,
+    )
+    inference_metadata_json: Mapped[dict | None] = mapped_column(
+        JSON,
         nullable=True,
     )
 

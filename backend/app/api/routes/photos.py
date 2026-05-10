@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.food_log import FoodLogResponse
@@ -40,6 +41,36 @@ async def upload_photo(
         notes=notes,
     )
     return PhotoUploadResponse.model_validate(photo_upload)
+
+
+@router.post(
+    "/analyze",
+    response_model=VisionInferenceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload and analyze a food photo",
+)
+async def analyze_photo(
+    file: UploadFile = File(...),
+    notes: str | None = Form(default=None),
+    serving_grams: float | None = Form(default=None, ge=1, le=10000),
+    save_prediction: bool = Form(default=True),
+    top_k: int = Form(default=settings.vision_top_k, ge=1, le=10),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> VisionInferenceResponse:
+    service = PhotoService(db)
+    photo_upload = await service.upload_photo(
+        current_user=current_user,
+        upload_file=file,
+        notes=notes,
+    )
+    return service.run_inference(
+        current_user=current_user,
+        photo_upload_id=photo_upload.id,
+        top_k=top_k,
+        save_prediction=save_prediction,
+        serving_grams=serving_grams,
+    )
 
 
 @router.get(
@@ -126,8 +157,9 @@ async def add_prediction(
 )
 async def run_inference(
     photo_upload_id: str,
-    top_k: int = Query(default=3, ge=1, le=10),
+    top_k: int = Query(default=settings.vision_top_k, ge=1, le=10),
     save_prediction: bool = Query(default=True),
+    serving_grams: float | None = Query(default=None, ge=1, le=10000),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> VisionInferenceResponse:
@@ -137,6 +169,7 @@ async def run_inference(
         photo_upload_id=photo_upload_id,
         top_k=top_k,
         save_prediction=save_prediction,
+        serving_grams=serving_grams,
     )
 
 
