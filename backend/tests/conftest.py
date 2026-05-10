@@ -32,7 +32,10 @@ from app.models.food_alias import FoodAlias  # noqa: E402
 from app.models.food_item import FoodItem  # noqa: E402
 from app.models.meal_plan import MealPlan  # noqa: E402
 from app.models.meal_plan_item import MealPlanItem  # noqa: E402
+from app.models.meal_template import MealTemplate  # noqa: E402
 from app.models.nutrition_fact import NutritionFact  # noqa: E402
+from app.models.recipe import Recipe  # noqa: E402
+from app.models.recipe_ingredient import RecipeIngredient  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.models.user_goal import UserGoal  # noqa: E402
 from app.models.user_profile import UserProfile  # noqa: E402
@@ -48,6 +51,9 @@ TEST_TABLES = [
     FoodItem.__table__,
     FoodAlias.__table__,
     NutritionFact.__table__,
+    Recipe.__table__,
+    RecipeIngredient.__table__,
+    MealTemplate.__table__,
     MealPlan.__table__,
     MealPlanItem.__table__,
 ]

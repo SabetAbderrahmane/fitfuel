@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -74,6 +74,14 @@ class Recipe(Base, TimestampMixin):
     diet_type: Mapped[str | None] = mapped_column(
         String(50),
         index=True,
+        nullable=True,
+    )
+    diet_tags_json: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+    allergen_flags_json: Mapped[dict | None] = mapped_column(
+        JSON,
         nullable=True,
     )
     source: Mapped[str] = mapped_column(

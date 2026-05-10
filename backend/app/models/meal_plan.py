@@ -92,3 +92,25 @@ class MealPlan(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="MealPlanItem.position.asc()",
     )
+
+    @property
+    def grouped_meals(self) -> list[dict]:
+        groups: dict[tuple[str, str, str], dict] = {}
+        for item in self.items or []:
+            recipe_name = item.source_recipe_name
+            template_name = item.source_template_name
+            key = (
+                item.meal_slot,
+                item.source_template_id or item.source_recipe_id or item.id,
+                recipe_name or template_name or item.food_name_snapshot,
+            )
+            if key not in groups:
+                groups[key] = {
+                    "meal_slot": item.meal_slot,
+                    "recipe_name": recipe_name,
+                    "template_name": template_name,
+                    "source_generation_type": item.source_generation_type,
+                    "items": [],
+                }
+            groups[key]["items"].append(item)
+        return list(groups.values())

@@ -37,6 +37,30 @@ class MealPlanItem(Base, TimestampMixin):
         index=True,
         nullable=False,
     )
+    source_recipe_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("recipes.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    source_template_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("meal_templates.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    source_recipe_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    source_template_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    source_generation_type: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
 
     meal_slot: Mapped[str] = mapped_column(
         String(30),

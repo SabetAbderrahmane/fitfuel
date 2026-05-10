@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -12,7 +13,10 @@ from app.models.food_alias import FoodAlias
 from app.models.food_item import FoodItem
 from app.models.meal_plan import MealPlan
 from app.models.meal_plan_item import MealPlanItem
+from app.models.meal_template import MealTemplate
 from app.models.nutrition_fact import NutritionFact
+from app.models.recipe import Recipe
+from app.models.recipe_ingredient import RecipeIngredient
 from app.models.user import User
 from app.models.user_goal import UserGoal
 from app.models.user_profile import UserProfile
@@ -96,6 +100,76 @@ def add_food(
     return food
 
 
+def add_recipe_template(
+    db: Session,
+    title: str,
+    *,
+    meal_slot: str = "lunch",
+    ingredients: list[FoodItem],
+    grams: list[float] | None = None,
+    diet_tags: dict | None = None,
+    allergen_flags: dict | None = None,
+    estimated_calories: float | None = None,
+    estimated_protein_g: float | None = None,
+    estimated_carbs_g: float | None = None,
+    estimated_fat_g: float | None = None,
+) -> MealTemplate:
+    suffix = uuid4().hex[:8]
+    recipe = Recipe(
+        name=title,
+        slug=f"{title.lower().replace(' ', '-')}-{suffix}",
+        description="Imported from RecipeNLG for thesis/demo use only.",
+        instructions="Cook and serve.",
+        servings=1,
+        category=meal_slot,
+        diet_type="general",
+        diet_tags_json=diet_tags or {},
+        allergen_flags_json=allergen_flags or {},
+        source="recipenlg_thesis",
+        is_active=True,
+        total_calories=estimated_calories or 500,
+        total_protein_g=estimated_protein_g or 35,
+        total_carbs_g=estimated_carbs_g or 45,
+        total_fat_g=estimated_fat_g or 15,
+    )
+    db.add(recipe)
+    db.flush()
+
+    grams = grams or [100.0 for _ in ingredients]
+    for position, (food, ingredient_grams) in enumerate(zip(ingredients, grams), start=1):
+        db.add(
+            RecipeIngredient(
+                recipe_id=recipe.id,
+                food_item_id=food.id,
+                position=position,
+                ingredient_name_snapshot=food.name,
+                quantity_label=f"{ingredient_grams}g",
+                grams=ingredient_grams,
+            )
+        )
+
+    template = MealTemplate(
+        recipe_id=recipe.id,
+        name=title,
+        slug=f"{recipe.slug}-template",
+        meal_slot=meal_slot,
+        category=meal_slot,
+        diet_type="general",
+        diet_tags_json=diet_tags or {},
+        allergen_flags_json=allergen_flags or {},
+        source="recipenlg_thesis",
+        estimated_calories=estimated_calories or 500,
+        estimated_protein_g=estimated_protein_g or 35,
+        estimated_carbs_g=estimated_carbs_g or 45,
+        estimated_fat_g=estimated_fat_g or 15,
+        is_active=True,
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+    return template
+
+
 def generate_payload(**overrides):
     payload = {
         "plan_date": date(2026, 5, 8).isoformat(),
@@ -145,6 +219,329 @@ def test_successful_generated_meal_plan_persists_plan_and_items(
     assert persisted_items[0].food_item_id == food.id
     assert persisted_items[0].food_name_snapshot == "Grilled Chicken"
     assert persisted_items[0].calories > 0
+
+
+def test_template_based_generation_succeeds_when_templates_exist(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    chicken = add_food(db_session, "Template Chicken", calories=180, protein=30)
+    rice = add_food(db_session, "Template Rice", calories=130, protein=3, carbs=28, category="carb")
+    add_recipe_template(
+        db_session,
+        "Chicken Rice Template",
+        ingredients=[chicken, rice],
+        grams=[150, 120],
+        estimated_calories=520,
+        estimated_protein_g=50,
+        estimated_carbs_g=45,
+        estimated_fat_g=10,
+    )
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["generation_mode"] == "rule_based"
+    assert body["item_count"] == 2
+    assert all(item["notes"] == "From recipe: Chicken Rice Template" for item in body["items"])
+    assert all(item["source_recipe_name"] == "Chicken Rice Template" for item in body["items"])
+    assert all(item["source_template_name"] == "Chicken Rice Template" for item in body["items"])
+    assert all(item["source_generation_type"] == "meal_template" for item in body["items"])
+    assert body["grouped_meals"][0]["recipe_name"] == "Chicken Rice Template"
+    assert len(body["grouped_meals"][0]["items"]) == 2
+    assert body["total_calories"] == round(sum(item["calories"] for item in body["items"]), 2)
+
+
+def test_template_generation_excludes_peanut_allergy(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    peanut = add_food(db_session, "Peanut Sauce", calories=590, protein=25, fat=50)
+    turkey = add_food(db_session, "Safe Turkey", calories=160, protein=28)
+    add_recipe_template(
+        db_session,
+        "Peanut Lunch",
+        ingredients=[peanut],
+        allergen_flags={"contains_peanut": True},
+        estimated_calories=500,
+    )
+    add_recipe_template(
+        db_session,
+        "Safe Turkey Lunch",
+        ingredients=[turkey],
+        allergen_flags={"contains_peanut": False},
+        estimated_calories=500,
+    )
+    db_session.add(Allergy(user_id=test_user.id, allergen_name="peanuts", is_active=True))
+    db_session.commit()
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    assert response.json()["items"][0]["food_name_snapshot"] == "Safe Turkey"
+
+
+def test_template_generation_excludes_dairy_restriction(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    cheese = add_food(db_session, "Cheese", calories=400, protein=25, fat=33, category="dairy")
+    tofu = add_food(db_session, "Tofu Bowl", calories=140, protein=16, category="protein")
+    add_recipe_template(
+        db_session,
+        "Cheese Lunch",
+        ingredients=[cheese],
+        allergen_flags={"contains_dairy": True},
+        estimated_calories=520,
+    )
+    add_recipe_template(
+        db_session,
+        "Dairy Free Tofu Lunch",
+        ingredients=[tofu],
+        allergen_flags={"contains_dairy": False},
+        diet_tags={"dairy_free_candidate": True},
+        estimated_calories=520,
+    )
+    db_session.add(
+        DietaryPreference(
+            user_id=test_user.id,
+            preference_type="restriction",
+            value="dairy_free",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    assert response.json()["items"][0]["food_name_snapshot"] == "Tofu Bowl"
+
+
+def test_template_generation_requires_vegetarian_candidate(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    chicken = add_food(db_session, "Chicken Strip", calories=180, protein=30)
+    lentils = add_food(db_session, "Lentils", calories=116, protein=9, carbs=20)
+    add_recipe_template(
+        db_session,
+        "Chicken Lunch",
+        ingredients=[chicken],
+        diet_tags={"vegetarian_candidate": False},
+        estimated_calories=510,
+    )
+    add_recipe_template(
+        db_session,
+        "Vegetarian Lentil Lunch",
+        ingredients=[lentils],
+        diet_tags={"vegetarian_candidate": True},
+        estimated_calories=510,
+    )
+    db_session.add(
+        DietaryPreference(
+            user_id=test_user.id,
+            preference_type="diet_type",
+            value="vegetarian",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    assert response.json()["items"][0]["food_name_snapshot"] == "Lentils"
+
+
+def test_template_generation_halal_rejects_pork_or_alcohol(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    pork = add_food(db_session, "Pork", calories=240, protein=25, fat=14)
+    salmon = add_food(db_session, "Halal Salmon", calories=200, protein=25, fat=10)
+    add_recipe_template(
+        db_session,
+        "Pork Lunch",
+        ingredients=[pork],
+        diet_tags={"halal_candidate": True},
+        allergen_flags={"contains_pork": True},
+        estimated_calories=500,
+    )
+    add_recipe_template(
+        db_session,
+        "Halal Salmon Lunch",
+        ingredients=[salmon],
+        diet_tags={"halal_candidate": True},
+        allergen_flags={"contains_pork": False, "contains_alcohol": False},
+        estimated_calories=500,
+    )
+    db_session.add(
+        DietaryPreference(
+            user_id=test_user.id,
+            preference_type="diet_type",
+            value="halal",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    assert response.json()["items"][0]["food_name_snapshot"] == "Halal Salmon"
+
+
+def test_template_generation_disliked_food_excludes_recipe_template_or_ingredient(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    broccoli = add_food(db_session, "Broccoli", calories=55, protein=4, carbs=11)
+    turkey = add_food(db_session, "Plain Turkey", calories=160, protein=28)
+    add_recipe_template(db_session, "Broccoli Bowl", ingredients=[broccoli], estimated_calories=500)
+    add_recipe_template(db_session, "Plain Turkey Bowl", ingredients=[turkey], estimated_calories=500)
+    db_session.add(
+        DietaryPreference(
+            user_id=test_user.id,
+            preference_type="disliked_food",
+            value="broccoli",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    assert response.json()["items"][0]["food_name_snapshot"] == "Plain Turkey"
+
+
+def test_template_generation_persists_plan_and_items(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    salmon = add_food(db_session, "Template Salmon", calories=200, protein=25, fat=10)
+    add_recipe_template(db_session, "Salmon Recipe", ingredients=[salmon], grams=[180])
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    body = response.json()
+    persisted_plan = db_session.scalar(select(MealPlan).where(MealPlan.id == body["id"]))
+    persisted_items = db_session.scalars(
+        select(MealPlanItem).where(MealPlanItem.meal_plan_id == body["id"])
+    ).all()
+    assert persisted_plan is not None
+    assert len(persisted_items) == 1
+    assert persisted_items[0].notes == "From recipe: Salmon Recipe"
+    assert persisted_items[0].source_recipe_name == "Salmon Recipe"
+    assert persisted_items[0].source_template_name == "Salmon Recipe"
+    assert persisted_items[0].source_generation_type == "meal_template"
+    assert persisted_plan.total_calories == persisted_items[0].calories
+
+
+def test_generation_falls_back_to_raw_food_when_no_template_available(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    raw_food = add_food(db_session, "Fallback Chicken")
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["items"][0]["food_item_id"] == raw_food.id
+    assert body["items"][0]["source_generation_type"] == "raw_food_fallback"
+    assert body["items"][0]["source_recipe_name"] is None
+    assert body["items"][0]["source_template_name"] is None
+    assert "Fallback raw-food generation used" in body["items"][0]["notes"]
+    assert "Fallback raw-food generation used" in body["notes"]
+
+
+def test_template_generated_response_includes_metadata_and_grouping(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    tofu = add_food(db_session, "Grouped Tofu", calories=140, protein=16)
+    rice = add_food(db_session, "Grouped Rice", calories=130, protein=3, carbs=28)
+    template = add_recipe_template(
+        db_session,
+        "Grouped Tofu Rice",
+        ingredients=[tofu, rice],
+        grams=[100, 100],
+    )
+
+    response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+
+    assert response.status_code == 201
+    body = response.json()
+    assert {item["source_recipe_id"] for item in body["items"]} == {template.recipe_id}
+    assert {item["source_template_id"] for item in body["items"]} == {template.id}
+    assert body["grouped_meals"][0]["recipe_name"] == "Grouped Tofu Rice"
+    assert body["grouped_meals"][0]["template_name"] == "Grouped Tofu Rice"
+    assert body["grouped_meals"][0]["source_generation_type"] == "meal_template"
+    assert len(body["grouped_meals"][0]["items"]) == 2
+
+
+def test_repeated_generation_prefers_some_template_variety(
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+):
+    add_profile(db_session, test_user)
+    add_goal(db_session, test_user)
+    chicken = add_food(db_session, "Variety Chicken", calories=180, protein=30)
+    salmon = add_food(db_session, "Variety Salmon", calories=200, protein=25, fat=10)
+    add_recipe_template(
+        db_session,
+        "Variety Chicken Bowl",
+        ingredients=[chicken],
+        estimated_calories=500,
+        estimated_protein_g=45,
+    )
+    add_recipe_template(
+        db_session,
+        "Variety Salmon Bowl",
+        ingredients=[salmon],
+        estimated_calories=505,
+        estimated_protein_g=44,
+    )
+
+    recipes = []
+    for _ in range(2):
+        response = client.post("/api/v1/meal-plans/generate", json=generate_payload())
+        assert response.status_code == 201
+        recipes.append(response.json()["items"][0]["source_recipe_name"])
+
+    assert len(set(recipes)) > 1
 
 
 def test_missing_profile_blocks_generation(
@@ -286,6 +683,7 @@ def test_generate_response_matches_meal_plan_response_shape(
         "total_fat_g",
         "item_count",
         "items",
+        "grouped_meals",
         "created_at",
         "updated_at",
     } == set(body)
@@ -293,6 +691,11 @@ def test_generate_response_matches_meal_plan_response_shape(
         "id",
         "meal_plan_id",
         "food_item_id",
+        "source_recipe_id",
+        "source_recipe_name",
+        "source_template_id",
+        "source_template_name",
+        "source_generation_type",
         "meal_slot",
         "position",
         "food_name_snapshot",

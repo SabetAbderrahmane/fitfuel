@@ -39,6 +39,11 @@ class MealPlanItemResponse(BaseModel):
     id: str
     meal_plan_id: str
     food_item_id: str
+    source_recipe_id: str | None = None
+    source_recipe_name: str | None = None
+    source_template_id: str | None = None
+    source_template_name: str | None = None
+    source_generation_type: str | None = None
 
     meal_slot: MealSlot
     position: int
@@ -59,6 +64,16 @@ class MealPlanItemResponse(BaseModel):
     updated_at: datetime
 
 
+class GroupedMealResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    meal_slot: MealSlot
+    recipe_name: str | None = None
+    template_name: str | None = None
+    source_generation_type: str | None = None
+    items: list[MealPlanItemResponse]
+
+
 class MealPlanResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -76,6 +91,7 @@ class MealPlanResponse(BaseModel):
     item_count: int
 
     items: list[MealPlanItemResponse]
+    grouped_meals: list[GroupedMealResponse] = Field(default_factory=list)
 
     created_at: datetime
     updated_at: datetime
