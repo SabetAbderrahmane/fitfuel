@@ -20,6 +20,10 @@ backend/.pytest_cache/
 backend/.mypy_cache/
 backend/.ruff_cache/
 backend/**/*.pyc
+backend/data/raw/
+backend/data/processed/
+*.csv
+*.parquet
 
 # OS / editor
 .DS_Store

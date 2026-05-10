@@ -105,8 +105,21 @@ export type MealPlanItemResponse = {
   carbs_g: number;
   fat_g: number;
   notes: string | null;
+  source_recipe_id?: string | null;
+  source_recipe_name?: string | null;
+  source_template_id?: string | null;
+  source_template_name?: string | null;
+  source_generation_type?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type GroupedMealResponse = {
+  meal_slot: MealSlot;
+  recipe_name: string | null;
+  template_name: string | null;
+  source_generation_type: string | null;
+  items: MealPlanItemResponse[];
 };
 
 export type MealPlanResponse = {
@@ -122,6 +135,7 @@ export type MealPlanResponse = {
   total_fat_g: number;
   item_count: number;
   items: MealPlanItemResponse[];
+  grouped_meals?: GroupedMealResponse[];
   created_at: string;
   updated_at: string;
 };

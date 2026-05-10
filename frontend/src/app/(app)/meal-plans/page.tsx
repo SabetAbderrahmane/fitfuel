@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   AnimatePresence,
   motion,
@@ -14,22 +15,23 @@ import {
   Calendar,
   Check,
   CheckCircle2,
-  ChevronRight,
   Flame,
   RefreshCw,
-  Search,
   ShoppingCart,
   Sparkles,
   Target,
+  X,
   Zap,
   Activity,
 } from "lucide-react";
 
 import { ErrorState } from "@/components/states/error-state";
 import { LoadingState } from "@/components/states/loading-state";
+import { createFoodLog } from "@/features/food-log/api/food-log";
 import { useGenerateMealPlanMutation } from "@/features/meal-plans/hooks/use-generate-meal-plan-mutation";
 import { useMealPlansQuery } from "@/features/meal-plans/hooks/use-meal-plans-query";
 import type {
+  GroupedMealResponse,
   MealPlanItemResponse,
   MealPlanResponse,
   MealPlansScreenData,
@@ -52,6 +54,21 @@ type InventoryItem = {
   name: string;
   amount: string;
   completed: boolean;
+};
+
+type DisplayMeal = {
+  id: string;
+  mealSlot: MealSlot;
+  title: string;
+  recipeName: string | null;
+  templateName: string | null;
+  calories: number;
+  proteinG: number;
+  carbsG: number;
+  fatG: number;
+  items: MealPlanItemResponse[];
+  sourceGenerationType: string | null;
+  isFallback: boolean;
 };
 
 const dayNames = [
@@ -257,10 +274,121 @@ function MacroStatCard({
   );
 }
 
+function sumMealItems(
+  items: MealPlanItemResponse[],
+  field: "calories" | "protein_g" | "carbs_g" | "fat_g"
+): number {
+  return items.reduce((sum, item) => sum + item[field], 0);
+}
+
+function firstMeaningfulText(...values: Array<string | null | undefined>): string | null {
+  return values.find((value) => Boolean(value?.trim()))?.trim() ?? null;
+}
+
+function titleFromGroupedMeal(meal: GroupedMealResponse): string {
+  const firstItem = meal.items[0];
+
+  return (
+    firstMeaningfulText(
+      meal.recipe_name,
+      firstItem?.source_recipe_name,
+      firstItem?.source_template_name,
+      meal.template_name,
+      firstItem?.food_name_snapshot
+    ) ?? formatMealType(meal.meal_slot)
+  );
+}
+
+function titleFromFlatItem(item: MealPlanItemResponse): string {
+  return (
+    firstMeaningfulText(
+      item.source_recipe_name,
+      item.source_template_name,
+      item.food_name_snapshot
+    ) ?? formatMealType(item.meal_slot)
+  );
+}
+
+function deriveDisplayMeals(plan: MealPlanResponse | null): DisplayMeal[] {
+  if (!plan) {
+    return [];
+  }
+
+  const slotOrder: Record<MealSlot, number> = {
+    breakfast: 0,
+    lunch: 1,
+    dinner: 2,
+    snack: 3,
+  };
+
+  if (plan.grouped_meals && plan.grouped_meals.length > 0) {
+    return [...plan.grouped_meals]
+      .sort((a, b) => slotOrder[a.meal_slot] - slotOrder[b.meal_slot])
+      .map((meal, index) => {
+        const firstItem = meal.items[0];
+        const sourceGenerationType =
+          meal.source_generation_type ?? firstItem?.source_generation_type ?? null;
+
+        return {
+          id: [
+            meal.meal_slot,
+            meal.recipe_name,
+            meal.template_name,
+            firstItem?.source_recipe_id,
+            firstItem?.source_template_id,
+            index,
+          ]
+            .filter(Boolean)
+            .join("-"),
+          mealSlot: meal.meal_slot,
+          title: titleFromGroupedMeal(meal),
+          recipeName: firstMeaningfulText(meal.recipe_name, firstItem?.source_recipe_name),
+          templateName: firstMeaningfulText(
+            meal.template_name,
+            firstItem?.source_template_name
+          ),
+          calories: sumMealItems(meal.items, "calories"),
+          proteinG: sumMealItems(meal.items, "protein_g"),
+          carbsG: sumMealItems(meal.items, "carbs_g"),
+          fatG: sumMealItems(meal.items, "fat_g"),
+          items: meal.items,
+          sourceGenerationType,
+          isFallback: sourceGenerationType === "raw_food_fallback",
+        };
+      });
+  }
+
+  const order: MealSlot[] = ["breakfast", "lunch", "dinner", "snack"];
+
+  return order
+    .map((slot) => plan.items.find((item) => item.meal_slot === slot))
+    .filter((item): item is MealPlanItemResponse => Boolean(item))
+    .map((item) => ({
+      id: item.id,
+      mealSlot: item.meal_slot,
+      title: titleFromFlatItem(item),
+      recipeName: item.source_recipe_name ?? null,
+      templateName: item.source_template_name ?? null,
+      calories: item.calories,
+      proteinG: item.protein_g,
+      carbsG: item.carbs_g,
+      fatG: item.fat_g,
+      items: [item],
+      sourceGenerationType: item.source_generation_type ?? null,
+      isFallback: item.source_generation_type === "raw_food_fallback",
+    }));
+}
+
 function MealCard({
   meal,
+  onOpenRecipe,
+  onLogMeal,
+  isLogging,
 }: Readonly<{
-  meal: MealPlanItemResponse;
+  meal: DisplayMeal;
+  onOpenRecipe: (meal: DisplayMeal) => void;
+  onLogMeal: (meal: DisplayMeal) => void;
+  isLogging: boolean;
 }>) {
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -308,19 +436,37 @@ function MealCard({
         style={{ transform: "translateZ(40px)" }}
       >
         <img
-          src={mealImages[meal.meal_slot]}
-          alt={meal.food_name_snapshot}
+          src={mealImages[meal.mealSlot]}
+          alt={meal.title}
           className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
           referrerPolicy="no-referrer"
         />
         <div className="absolute left-4 top-4 rounded-sm bg-primary/90 px-3 py-1 text-[9px] font-black uppercase leading-none tracking-widest text-on-primary shadow-lg backdrop-blur-md">
-          {formatMealTime(meal.meal_slot)}
+          {formatMealTime(meal.mealSlot)}
+        </div>
+        {meal.isFallback ? (
+          <div className="absolute right-4 top-4 rounded-sm bg-[#ffb4ab]/90 px-3 py-1 text-[9px] font-black uppercase leading-none tracking-widest text-[#3b0906] shadow-lg backdrop-blur-md">
+            Fallback
+          </div>
+        ) : null}
+        {!meal.isFallback && meal.sourceGenerationType === "meal_template" ? (
+          <div className="absolute right-4 top-4 rounded-sm bg-background/80 px-3 py-1 text-[9px] font-black uppercase leading-none tracking-widest text-primary shadow-lg backdrop-blur-md">
+            Recipe
+          </div>
+        ) : null}
+        <div className="absolute left-4 top-12 rounded-sm bg-background/70 px-3 py-1 text-[9px] font-black uppercase leading-none tracking-widest text-slate-200 shadow-lg backdrop-blur-md">
+          {formatMealType(meal.mealSlot)}
         </div>
         <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-background/20 to-transparent" />
         <div className="absolute bottom-3 left-5" style={{ transform: "translateZ(25px)" }}>
-          <h3 className="font-headline text-xl font-black tracking-tight text-white">
-            {meal.food_name_snapshot}
+          <h3 className="pr-4 font-headline text-xl font-black tracking-tight text-white">
+            {meal.title}
           </h3>
+          {meal.items.length > 1 ? (
+            <p className="mt-1 text-xs font-bold text-slate-300">
+              {meal.items.length} ingredients
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -337,9 +483,9 @@ function MealCard({
 
           <div className="flex gap-3">
             {[
-              { label: "P", val: `${Math.round(meal.protein_g)}g`, col: "text-primary" },
-              { label: "C", val: `${Math.round(meal.carbs_g)}g`, col: "text-secondary" },
-              { label: "F", val: `${Math.round(meal.fat_g)}g`, col: "text-tertiary" },
+              { label: "P", val: `${Math.round(meal.proteinG)}g`, col: "text-primary" },
+              { label: "C", val: `${Math.round(meal.carbsG)}g`, col: "text-secondary" },
+              { label: "F", val: `${Math.round(meal.fatG)}g`, col: "text-tertiary" },
             ].map((macro) => (
               <div key={macro.label} className="text-center transition-transform group-hover:scale-105">
                 <span className={cn("block text-[9px] font-black", macro.col)}>
@@ -361,6 +507,7 @@ function MealCard({
           </button>
           <button
             type="button"
+            onClick={() => onOpenRecipe(meal)}
             className="flex items-center justify-center gap-1.5 rounded bg-surface-container-highest/40 py-2 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-surface-bright"
           >
             <BookOpen className="h-3 w-3" />
@@ -368,14 +515,112 @@ function MealCard({
           </button>
           <button
             type="button"
+            onClick={() => onLogMeal(meal)}
+            disabled={isLogging}
             className="flex items-center justify-center gap-1.5 rounded bg-primary py-2 text-[9px] font-black uppercase tracking-widest text-on-primary shadow-lg transition-all hover:bg-primary-container"
           >
             <CheckCircle2 className="h-3 w-3" />
-            Log
+            {isLogging ? "Logging" : "Log"}
           </button>
         </div>
       </div>
     </motion.div>
+  );
+}
+
+function RecipeModal({
+  meal,
+  onClose,
+}: Readonly<{
+  meal: DisplayMeal | null;
+  onClose: () => void;
+}>) {
+  if (!meal) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/75 px-4 backdrop-blur-md">
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 10, scale: 0.98 }}
+        className="max-h-[85vh] w-full max-w-3xl overflow-hidden rounded-lg border border-primary/15 bg-surface-container-low shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-primary/10 p-6">
+          <div>
+            <span className="mb-2 block text-[10px] font-black uppercase tracking-widest text-primary">
+              {formatMealType(meal.mealSlot)}
+            </span>
+            <h2 className="font-headline text-2xl font-black leading-tight text-white">
+              {meal.recipeName ?? meal.templateName ?? meal.title}
+            </h2>
+            {meal.isFallback ? (
+              <p className="mt-2 text-xs font-bold uppercase tracking-widest text-[#ffb4ab]">
+                Fallback raw-food generation
+              </p>
+            ) : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-surface-container-highest/60 text-slate-300 transition-colors hover:bg-surface-bright hover:text-white"
+            aria-label="Close recipe details"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="max-h-[60vh] overflow-y-auto p-6">
+          <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+            {[
+              { label: "Kcal", value: Math.round(meal.calories) },
+              { label: "Protein", value: `${Math.round(meal.proteinG)}g` },
+              { label: "Carbs", value: `${Math.round(meal.carbsG)}g` },
+              { label: "Fat", value: `${Math.round(meal.fatG)}g` },
+            ].map((macro) => (
+              <div
+                key={macro.label}
+                className="rounded-lg border border-white/5 bg-[rgba(46,53,69,0.35)] p-3"
+              >
+                <span className="block text-[9px] font-black uppercase tracking-widest text-slate-500">
+                  {macro.label}
+                </span>
+                <span className="mt-1 block text-lg font-black text-on-surface">
+                  {macro.value}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-3">
+            {meal.items.map((item) => (
+              <div
+                key={item.id}
+                className="grid gap-3 rounded-lg border border-white/5 bg-[rgba(46,53,69,0.28)] p-4 md:grid-cols-[1fr_auto]"
+              >
+                <div>
+                  <h3 className="font-bold text-white">
+                    {item.food_name_snapshot}
+                  </h3>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {Math.round(item.planned_grams)}g
+                    {item.notes ? ` • ${item.notes}` : ""}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-slate-300 md:justify-end">
+                  <span>{Math.round(item.calories)} kcal</span>
+                  <span>P {Math.round(item.protein_g)}g</span>
+                  <span>C {Math.round(item.carbs_g)}g</span>
+                  <span>F {Math.round(item.fat_g)}g</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </motion.div>
+    </div>
   );
 }
 
@@ -505,9 +750,14 @@ function InventorySidebar({
 
 export default function MealPlansPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>("");
+  const [selectedRecipeMeal, setSelectedRecipeMeal] = useState<DisplayMeal | null>(null);
+  const [loggingMealId, setLoggingMealId] = useState<string | null>(null);
+  const [logMessage, setLogMessage] = useState<string | null>(null);
+  const [logError, setLogError] = useState<string | null>(null);
 
   useEffect(() => {
     setAccessToken(getAccessToken());
@@ -622,16 +872,7 @@ export default function MealPlansPage() {
     [selectedPlan]
   );
 
-  const mealsForDay = useMemo(() => {
-    if (!selectedPlan) {
-      return [];
-    }
-
-    const order: MealSlot[] = ["breakfast", "lunch", "dinner", "snack"];
-    return order
-      .map((slot) => selectedPlan.items.find((item) => item.meal_slot === slot))
-      .filter((item): item is MealPlanItemResponse => Boolean(item));
-  }, [selectedPlan]);
+  const mealsForDay = useMemo(() => deriveDisplayMeals(selectedPlan), [selectedPlan]);
 
   const handleGenerate = () => {
     if (!accessToken || !selectedDate) {
@@ -648,6 +889,43 @@ export default function MealPlansPage() {
         max_items_per_slot: 1,
       },
     });
+  };
+
+  const handleLogMeal = async (meal: DisplayMeal) => {
+    if (!accessToken || !selectedDate || meal.items.length === 0) {
+      return;
+    }
+
+    setLoggingMealId(meal.id);
+    setLogMessage(null);
+    setLogError(null);
+
+    try {
+      await createFoodLog(accessToken, {
+        logged_for_date: selectedDate,
+        meal_type: meal.mealSlot,
+        notes: `Logged from meal plan: ${meal.title}`,
+        items: meal.items.map((item) => ({
+          food_item_id: item.food_item_id,
+          quantity: item.planned_quantity,
+          grams: item.planned_grams,
+        })),
+      });
+
+      setLogMessage(`${meal.title} logged as ${formatMealType(meal.mealSlot)}.`);
+      await queryClient.invalidateQueries({
+        queryKey: ["food-log-page", accessToken],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["dashboard-data", accessToken],
+      });
+    } catch (error) {
+      setLogError(
+        error instanceof Error ? error.message : "Could not log this meal."
+      );
+    } finally {
+      setLoggingMealId(null);
+    }
   };
 
   if (!hydrated) {
@@ -864,10 +1142,28 @@ export default function MealPlansPage() {
           </div>
         ) : null}
 
+        {logError ? (
+          <div className="mb-8 rounded-lg bg-[#ffb4ab]/10 px-4 py-3 text-sm text-[#ffb4ab]">
+            {logError}
+          </div>
+        ) : null}
+
+        {logMessage ? (
+          <div className="mb-8 rounded-lg bg-primary/10 px-4 py-3 text-sm font-semibold text-primary">
+            {logMessage}
+          </div>
+        ) : null}
+
         {selectedPlan ? (
           <section className="grid grid-cols-1 gap-8 xl:grid-cols-2 2xl:grid-cols-2">
             {mealsForDay.map((meal) => (
-              <MealCard key={meal.id} meal={meal} />
+              <MealCard
+                key={meal.id}
+                meal={meal}
+                onOpenRecipe={setSelectedRecipeMeal}
+                onLogMeal={handleLogMeal}
+                isLogging={loggingMealId === meal.id}
+              />
             ))}
           </section>
         ) : (
@@ -893,6 +1189,15 @@ export default function MealPlansPage() {
       </main>
 
       <InventorySidebar items={inventoryItems} />
+
+      <AnimatePresence>
+        {selectedRecipeMeal ? (
+          <RecipeModal
+            meal={selectedRecipeMeal}
+            onClose={() => setSelectedRecipeMeal(null)}
+          />
+        ) : null}
+      </AnimatePresence>
 
       <style jsx global>{`
         .no-scrollbar::-webkit-scrollbar {
